@@ -4,6 +4,10 @@ The ultimate open-source solution for efficient token bundling on Pump.Fun with 
 
 Discord community: https://discord.gg/solana-scripts
 
+Still the best around since 2024.
+
+Last update: 15.07.2025
+
 ![Pump.Fun Bundler](https://img.shields.io/badge/PumpFun-Bundler-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Version](https://img.shields.io/badge/version-2.0-orange)
