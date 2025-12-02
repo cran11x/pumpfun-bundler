@@ -164,6 +164,7 @@ npm install
 
 # Configure environment variables
 # Create a .env file with your settings (see ENV Setup section)
+# Copy .env.example to .env and fill in your values
 
 # Start the application
 npm run start
@@ -188,7 +189,11 @@ If you're new to NodeJS or development tools, we've got you covered:
    npm install
    ```
 
-5. **Configure Your Environment**: Edit the .env file with your wallet details
+5. **Configure Your Environment**: 
+   - Create a `.env` file in the root directory
+   - Add your Helius RPC URL: `HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY`
+   - Get your API key from https://helius.dev
+   - See the ENV Setup section below for all available options
 
 6. **Launch the Tool**: Start the bundler with
    ```
@@ -202,6 +207,11 @@ Don't worry about the "BigInt Failed To Load Bindings" message – this is norma
 Your `.env` file is the control center for the bundler. Let's break down each setting:
 
 ```
+# Required: Helius RPC URL with API key
+# Get your API key from https://helius.dev
+HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY_HERE
+# If not set, the bundler will use a default RPC endpoint (not recommended for production)
+
 LICENSE_KEY = Your Solana-Scripts.com License Key (free registration required)
 
 SIGNER_PRIVATE_KEY = Private key of your development wallet in BASE58 format
@@ -216,7 +226,7 @@ FUNDER_PRIVATE_KEY = Private key of your funding wallet in BASE58 format
 SELLER_PRIVATE_KEY = Private key of your designated seller wallet
 # Used specifically for transfer-sell mode - keep 0.1 SOL for fees
 
-RPC_URL = Your preferred Solana RPC URL
+RPC_URL = Your preferred Solana RPC URL (optional, if different from HELIUS_RPC_URL)
 # Use a reliable private RPC for best results
 
 WS = Your WebSocket URL 

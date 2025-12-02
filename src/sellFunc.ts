@@ -3,7 +3,7 @@ import { PublicKey, VersionedTransaction, SYSVAR_RENT_PUBKEY, TransactionMessage
 import { loadKeypairs } from "./createKeys";
 import { searcherClient } from "./clients/jito";
 import { Bundle as JitoBundle } from "jito-ts/dist/sdk/block-engine/types.js";
-import promptSync from "prompt-sync";
+import { MenuUI } from "./ui/menu";
 import * as spl from "@solana/spl-token";
 import bs58 from "bs58";
 import path from "path";
@@ -13,7 +13,6 @@ import { randomInt } from "crypto";
 import { getRandomTipAccount } from "./clients/config";
 import BN from "bn.js";
 
-const prompt = promptSync();
 const keyInfoPath = path.join(__dirname, "keyInfo.json");
 
 function chunkArray<T>(array: T[], size: number): T[][] {
@@ -78,7 +77,7 @@ export async function sellXPercentagePF() {
 	// Initialize pumpfun anchor
 	const IDL_PumpFun = JSON.parse(fs.readFileSync("./pumpfun-IDL.json", "utf-8")) as anchor.Idl;
 
-	const pfprogram = new anchor.Program(IDL_PumpFun, PUMP_PROGRAM, provider);
+	const pfprogram = new anchor.Program(IDL_PumpFun, provider);
 
 	// Start selling
 	const bundledTxns = [];
@@ -100,7 +99,6 @@ export async function sellXPercentagePF() {
 	}
 
 	const mintKp = Keypair.fromSecretKey(Uint8Array.from(bs58.decode(poolInfo.mintPk)));
-	//console.log(`Mint: ${mintKp.publicKey.toBase58()}`);
 
 	const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mintKp.publicKey.toBytes()], pfprogram.programId);
 	let [associatedBondingCurve] = PublicKey.findProgramAddressSync(
@@ -108,8 +106,10 @@ export async function sellXPercentagePF() {
 		spl.ASSOCIATED_TOKEN_PROGRAM_ID
 	);
 
-	const supplyPercent = +prompt("Percentage to sell (Ex. 1 for 1%): ") / 100;
-	const jitoTipAmt = +prompt("Jito tip in Sol (Ex. 0.01): ") * LAMPORTS_PER_SOL;
+	const sellPercentage = await MenuUI.promptSellPercentage();
+	const supplyPercent = sellPercentage / 100;
+	const jitoTip = await MenuUI.promptJitoTip();
+	const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
 	const mintInfo = await connection.getTokenSupply(mintKp.publicKey);
 
@@ -133,7 +133,7 @@ export async function sellXPercentagePF() {
 			sellTotalAmount += transferAmount; // Keep track to sell at the end
 			console.log(`Sending ${transferAmount / 1e6} from dev wallet.`);
 
-			const ataIx = spl.createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, PayerTokenATA, payer.publicKey);
+			const ataIx = spl.createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, PayerTokenATA, payer.publicKey, new PublicKey(poolInfo.mint));
 
 			const TokenATA = await spl.getAssociatedTokenAddress(new PublicKey(poolInfo.mint), wallet.publicKey);
 			const transferIx = spl.createTransferInstruction(TokenATA, PayerTokenATA, wallet.publicKey, transferAmount);

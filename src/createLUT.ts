@@ -2,7 +2,8 @@ import { AddressLookupTableProgram, Keypair, PublicKey, VersionedTransaction, Tr
 import fs from 'fs';
 import path from 'path';
 import { wallet, connection, PUMP_PROGRAM, payer } from '../config';
-import promptSync from 'prompt-sync';
+import { MenuUI } from './ui/menu';
+import inquirer from 'inquirer';
 import { searcherClient } from "./clients/jito";
 import { Bundle as JitoBundle } from 'jito-ts/dist/sdk/block-engine/types.js';
 import { getRandomTipAccount } from "./clients/config";
@@ -13,23 +14,39 @@ import idl from "../pumpfun-IDL.json";
 import { Program, Idl, AnchorProvider, setProvider } from "@coral-xyz/anchor";
 import { bs58 } from '@project-serum/anchor/dist/cjs/utils/bytes';
 
-const prompt = promptSync();
 const keyInfoPath = path.join(__dirname, 'keyInfo.json');
 
 const provider = new AnchorProvider(connection, wallet as any, {});
 
 setProvider(provider);
 
-const program = new Program(idl as Idl, PUMP_PROGRAM);
+const program = new Program(idl as any, provider);
 
 export async function extendLUT() {
     // -------- step 1: ask nessesary questions for LUT build --------
     let vanityPK = null;
 
-    const vanityPrompt = prompt('Do you want to import a custom vanity address? (y/n): ').toLowerCase();
-    const jitoTipAmt = +prompt('Jito tip in Sol (Ex. 0.01): ') * LAMPORTS_PER_SOL;
-    if (vanityPrompt === 'y') {
-        vanityPK = prompt('Enter the private key of the vanity address (bs58): ');
+    const { wantVanity } = await inquirer.prompt<{ wantVanity: boolean }>({
+        type: 'confirm',
+        name: 'wantVanity',
+        message: 'Do you want to import a custom vanity address?',
+        default: false,
+    });
+    const jitoTip = await MenuUI.promptJitoTip();
+    const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
+    if (wantVanity) {
+        const { vanityKey } = await inquirer.prompt<{ vanityKey: string }>({
+            type: 'input',
+            name: 'vanityKey',
+            message: 'Enter the private key of the vanity address (bs58):',
+            validate: (input: string) => {
+                if (!input || input.trim().length === 0) {
+                    return 'Private key is required.';
+                }
+                return true;
+            },
+        });
+        vanityPK = vanityKey.trim();
     }
 
     // Read existing data from poolInfo.json
@@ -232,8 +249,9 @@ export async function extendLUT() {
 
 export async function createLUT() {
 
-    // -------- step 1: ask nessesary questions for LUT build --------
-    const jitoTipAmt = +prompt('Jito tip in Sol (Ex. 0.01): ') * LAMPORTS_PER_SOL;
+    // -------- step 1: ask necessary questions for LUT build --------
+    const jitoTip = await MenuUI.promptJitoTip();
+    const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
     // Read existing data from poolInfo.json
     let poolInfo: { [key: string]: any } = {};

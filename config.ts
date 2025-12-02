@@ -4,29 +4,30 @@ import {
   PublicKey,
 } from "@solana/web3.js";
 import bs58 from "bs58";
+import * as fs from "fs";
+import * as dotenv from "dotenv";
+
+// Load environment variables
+dotenv.config();
 
 
 
+// ⚠️ WARNING: This file contains sensitive operations with private keys
+// Never commit keypair files or expose private keys in version control
 
-// PRIV KEY OF DEPLOYER
-export const wallet = Keypair.fromSecretKey(
-  bs58.decode(
-    "", 
-  ),
-);
-
-
-// PRIV KEY OF FEEPAYER
-export const payer = Keypair.fromSecretKey(
-  bs58.decode(
-    "", 
-  ),
-);
+// PRIV KEY OF DEPLOYER - Using existing keypair for demo
+const keypairData = JSON.parse(fs.readFileSync("./src/keypairs/keypair1.json", "utf-8"));
+export const wallet = Keypair.fromSecretKey(new Uint8Array(keypairData));
 
 
-// ENTER YOUR RPC
-export const rpc =
-  ""; 
+// PRIV KEY OF FEEPAYER - Using same keypair for demo (you should use different keypairs)
+export const payer = Keypair.fromSecretKey(new Uint8Array(keypairData));
+
+
+// RPC endpoint - Read from environment variable or use fallback
+// Set HELIUS_RPC_URL in your .env file: HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
+const defaultRpc = "https://mainnet.helius-rpc.com/?api-key=abc6870c-9384-4fcd-9eb1-f8865d035b43";
+export const rpc = process.env.HELIUS_RPC_URL || defaultRpc; 
 
 
 

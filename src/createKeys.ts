@@ -1,10 +1,8 @@
 import { Keypair } from '@solana/web3.js';
 import * as fs from 'fs';
-import promptSync from 'prompt-sync';
 import path from 'path';
 import bs58 from 'bs58';
-
-const prompt = promptSync();
+import { MenuUI } from './ui/menu';
 
 const keypairsDir = path.join(__dirname, 'keypairs');
 const keyInfoPath = path.join(__dirname, 'keyInfo.json');
@@ -62,16 +60,12 @@ function updatePoolInfo(wallets: Keypair[]) {
 }
 
 export async function createKeypairs() {
-  console.log('WARNING: If you create new ones, ensure you don\'t have SOL, OR ELSE IT WILL BE GONE.');
-  const action = prompt('Do you want to (c)reate new wallets or (u)se existing ones? (c/u): ');
+  console.log('⚠️  WARNING: If you create new ones, ensure you don\'t have SOL, OR ELSE IT WILL BE GONE.');
+  const action = await MenuUI.promptCreateOrUse();
   let wallets: Keypair[] = [];
 
   if (action === 'c') {
-    const numOfWallets = 24; // Hardcode 24 buyer keypairs here.
-    if (isNaN(numOfWallets) || numOfWallets <= 0) {
-      console.log('Invalid number. Please enter a positive integer.');
-      return;
-    }
+    const numOfWallets = await MenuUI.promptNumberWallets();
 
     wallets = generateWallets(numOfWallets);
     wallets.forEach((wallet, index) => {

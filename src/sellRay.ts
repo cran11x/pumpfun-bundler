@@ -3,7 +3,8 @@ import { PublicKey, VersionedTransaction, SYSVAR_RENT_PUBKEY, TransactionMessage
 import { loadKeypairs } from "./createKeys";
 import { searcherClient } from "./clients/jito";
 import { Bundle as JitoBundle } from "jito-ts/dist/sdk/block-engine/types.js";
-import promptSync from "prompt-sync";
+import { MenuUI } from "./ui/menu";
+import inquirer from "inquirer";
 import * as spl from "@solana/spl-token";
 import bs58 from "bs58";
 import path from "path";
@@ -14,7 +15,6 @@ import { getRandomTipAccount } from "./clients/config";
 import BN from "bn.js";
 import { derivePoolKeys, IPoolKeys } from "./clients/poolKeysReassigned";
 
-const prompt = promptSync();
 const keyInfoPath = path.join(__dirname, "keyInfo.json");
 
 function chunkArray<T>(array: T[], size: number): T[][] {
@@ -94,11 +94,23 @@ export async function sellXPercentageRAY() {
 	}
 
 	const mintKp = Keypair.fromSecretKey(Uint8Array.from(bs58.decode(poolInfo.mintPk)));
-	//console.log(`Mint: ${mintKp.publicKey.toBase58()}`);
 
-	const marketID = new PublicKey(prompt("Enter marketID of your migration: "));
-	const supplyPercent = +prompt("Percentage to sell (Ex. 1 for 1%): ") / 100;
-	const jitoTipAmt = +prompt("Jito tip in Sol (Ex. 0.01): ") * LAMPORTS_PER_SOL;
+	const { marketIDInput } = await inquirer.prompt<{ marketIDInput: string }>({
+		type: 'input',
+		name: 'marketIDInput',
+		message: 'Enter marketID of your migration:',
+		validate: (input: string) => {
+			if (!input || input.trim().length === 0) {
+				return 'Market ID is required.';
+			}
+			return true;
+		},
+	});
+	const marketID = new PublicKey(marketIDInput.trim());
+	const sellPercentage = await MenuUI.promptSellPercentage();
+	const supplyPercent = sellPercentage / 100;
+	const jitoTip = await MenuUI.promptJitoTip();
+	const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
 	if (supplyPercent > 0.25) {
 		// protect investors and prevent fraud
@@ -137,7 +149,7 @@ export async function sellXPercentageRAY() {
 			sellTotalAmount += transferAmount; // Keep track to sell at the end
 			console.log(`Sending ${transferAmount / 1e6} from dev wallet.`);
 
-			const ataIx = spl.createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, PayerTokenATA, mintKp.publicKey);
+			const ataIx = spl.createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, PayerTokenATA, payer.publicKey, new PublicKey(poolInfo.mint));
 
 			const TokenATA = await spl.getAssociatedTokenAddress(new PublicKey(poolInfo.mint), wallet.publicKey);
 			const transferIx = spl.createTransferInstruction(TokenATA, PayerTokenATA, wallet.publicKey, transferAmount);

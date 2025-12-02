@@ -4,14 +4,13 @@ import { wallet, connection, payer } from "../config";
 import * as spl from "@solana/spl-token";
 import { searcherClient } from "./clients/jito";
 import { Bundle as JitoBundle } from "jito-ts/dist/sdk/block-engine/types.js";
-import promptSync from "prompt-sync";
+import { MenuUI } from "./ui/menu";
+import inquirer from "inquirer";
 import { createLUT, extendLUT } from "./createLUT";
 import fs from "fs";
 import path from "path";
 import { getRandomTipAccount } from "./clients/config";
 import BN from "bn.js";
-
-const prompt = promptSync();
 const keyInfoPath = path.join(__dirname, "keyInfo.json");
 
 let poolInfo: { [key: string]: any } = {};
@@ -191,8 +190,9 @@ async function sendBundle(txns: VersionedTransaction[]) {
 	}
 }
 
-async function generateATAandSOL() {
-	const jitoTipAmt = +prompt("Jito tip in Sol (Ex. 0.01): ") * LAMPORTS_PER_SOL;
+export async function generateATAandSOL() {
+	const jitoTip = await MenuUI.promptJitoTip();
+	const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
 	const { blockhash } = await connection.getLatestBlockhash();
 	const sendTxns: VersionedTransaction[] = [];
@@ -205,13 +205,13 @@ async function generateATAandSOL() {
 	await sendBundle(sendTxns);
 }
 
-async function createReturns() {
+export async function createReturns() {
 	const txsSigned: VersionedTransaction[] = [];
 	const keypairs = loadKeypairs();
 	const chunkedKeypairs = chunkArray(keypairs, 7); // EDIT CHUNKS?
 
-	const jitoTipIn = prompt("Jito tip in Sol (Ex. 0.01): ");
-	const TipAmt = parseFloat(jitoTipIn) * LAMPORTS_PER_SOL;
+	const jitoTip = await MenuUI.promptJitoTip();
+	const TipAmt = jitoTip * LAMPORTS_PER_SOL;
 
 	const { blockhash } = await connection.getLatestBlockhash();
 
@@ -290,25 +290,65 @@ async function simulateAndWriteBuys() {
 	let totalTokensBought = 0;
 	const buys: { pubkey: PublicKey; solAmount: Number; tokenAmount: BN; percentSupply: number }[] = [];
 
-	for (let it = 0; it <= 24; it++) {
-		let keypair;
+	// Prompt for dev wallet first
+	const devSolInput = await inquirer.prompt<{ amount: string }>({
+		type: 'input',
+		name: 'amount',
+		message: 'Enter the amount of SOL for dev wallet:',
+		validate: (input: string) => {
+			const num = parseFloat(input);
+			if (isNaN(num) || num <= 0) {
+				return 'Please enter a valid positive number.';
+			}
+			return true;
+		},
+	});
+	let solInput = Number(devSolInput.amount) * 1.21;
+	let keypair = wallet;
+	const solAmount = solInput * LAMPORTS_PER_SOL;
+	const e = new BN(solAmount);
+	const initialVirtualSolReserves = 30 * LAMPORTS_PER_SOL + initialRealSolReserves;
+	const a = new BN(initialVirtualSolReserves).mul(new BN(initialRealTokenReserves));
+	const i = new BN(initialVirtualSolReserves).add(e);
+	const l = a.div(i).add(new BN(1));
+	let tokensToBuy = new BN(initialVirtualTokenReserves).sub(l);
+	tokensToBuy = BN.min(tokensToBuy, new BN(initialRealTokenReserves));
+	const tokensBought = tokensToBuy.toNumber();
+	const percentSupply = (tokensBought / tokenTotalSupply) * 100;
+	console.log(`Wallet 0: Bought ${tokensBought / tokenDecimals} tokens for ${e.toNumber() / LAMPORTS_PER_SOL} SOL`);
+	console.log(`Wallet 0: Owns ${percentSupply.toFixed(4)}% of total supply\n`);
+	buys.push({ pubkey: keypair.publicKey, solAmount: Number(devSolInput.amount), tokenAmount: tokensToBuy, percentSupply });
+	initialRealSolReserves += e.toNumber();
+	initialRealTokenReserves -= tokensBought;
+	initialVirtualTokenReserves -= tokensBought;
+	totalTokensBought += tokensBought;
 
-		let solInput;
-		if (it === 0) {
-			solInput = prompt(`Enter the amount of SOL for dev wallet: `);
-			solInput = Number(solInput) * 1.21;
-			keypair = wallet;
-		} else {
-			solInput = +prompt(`Enter the amount of SOL for wallet ${it}: `);
-			keypair = keypairs[it - 1];
+	// Prompt for bundle wallets
+	for (let it = 1; it <= keypairs.length; it++) {
+		const walletSolInput = await inquirer.prompt<{ amount: string }>({
+			type: 'input',
+			name: 'amount',
+			message: `Enter the amount of SOL for wallet ${it} (or press Enter to skip remaining):`,
+			validate: (input: string) => {
+				if (!input || input.trim() === '') {
+					return true; // Allow empty to skip
+				}
+				const num = parseFloat(input);
+				if (isNaN(num) || num <= 0) {
+					return 'Please enter a valid positive number or press Enter to skip.';
+				}
+				return true;
+			},
+		});
+
+		if (!walletSolInput.amount || walletSolInput.amount.trim() === '') {
+			console.log(`Skipping remaining wallets...`);
+			break;
 		}
 
+		solInput = Number(walletSolInput.amount);
+		keypair = keypairs[it - 1];
 		const solAmount = solInput * LAMPORTS_PER_SOL;
-
-		if (isNaN(solAmount) || solAmount <= 0) {
-			console.log(`Invalid input for wallet ${it}, skipping.`);
-			continue;
-		}
 
 		const e = new BN(solAmount);
 		const initialVirtualSolReserves = 30 * LAMPORTS_PER_SOL + initialRealSolReserves;
@@ -339,12 +379,11 @@ async function simulateAndWriteBuys() {
 	console.log("Total % of tokens bought: ", (totalTokensBought / tokenTotalSupply) * 100);
 	console.log(); // \n
 
-	const confirm = prompt("Do you want to use these buys? (yes/no): ").toLowerCase();
-	if (confirm === "yes") {
+	const confirmed = await MenuUI.promptConfirm("Do you want to use these buys?");
+	if (confirmed) {
 		writeBuysToFile(buys);
 	} else {
-		console.log("Simulation aborted. Restarting...");
-		simulateAndWriteBuys(); // Restart the simulation
+		console.log("Simulation aborted.");
 	}
 }
 
@@ -370,42 +409,117 @@ function writeBuysToFile(buys: Buy[]) {
 	console.log("Buys have been successfully saved to keyinfo.json");
 }
 
+async function checkAllBalances() {
+	const keypairs = loadKeypairs();
+	
+	console.log("\n💰 Wallet SOL Balances:\n");
+	
+	// Check dev wallet
+	try {
+		const devBalance = await connection.getBalance(wallet.publicKey);
+		const devSolBalance = devBalance / LAMPORTS_PER_SOL;
+		console.log(`Dev Wallet (${wallet.publicKey.toString().substring(0, 8)}...): ${devSolBalance.toFixed(4)} SOL`);
+	} catch (error) {
+		console.log(`Dev Wallet: Error checking balance - ${error}`);
+	}
+	
+	// Check payer wallet
+	try {
+		const payerBalance = await connection.getBalance(payer.publicKey);
+		const payerSolBalance = payerBalance / LAMPORTS_PER_SOL;
+		console.log(`Payer Wallet (${payer.publicKey.toString().substring(0, 8)}...): ${payerSolBalance.toFixed(4)} SOL\n`);
+	} catch (error) {
+		console.log(`Payer Wallet: Error checking balance - ${error}\n`);
+	}
+	
+	// Check all bundle wallets
+	console.log("Bundle Wallets:");
+	let totalSol = 0;
+	for (let i = 0; i < keypairs.length; i++) {
+		try {
+			const balance = await connection.getBalance(keypairs[i].publicKey);
+			const solBalance = balance / LAMPORTS_PER_SOL;
+			totalSol += solBalance;
+			console.log(`  Wallet ${i + 1} (${keypairs[i].publicKey.toString().substring(0, 8)}...): ${solBalance.toFixed(4)} SOL`);
+		} catch (error) {
+			console.log(`  Wallet ${i + 1}: Error checking balance`);
+		}
+	}
+	
+	console.log(`\n📊 Total SOL in bundle wallets: ${totalSol.toFixed(4)} SOL`);
+	
+	// Check token balances if mint exists
+	if (poolInfo.mint) {
+		console.log("\n🪙 Token Balances:\n");
+		const mint = new PublicKey(poolInfo.mint);
+		
+		// Dev wallet token balance
+		try {
+			const devTokenAccount = await spl.getAssociatedTokenAddress(mint, wallet.publicKey);
+			const devTokenBalance = await connection.getTokenAccountBalance(devTokenAccount);
+			const tokenAmount = Number(devTokenBalance.value.amount) / 1e6;
+			console.log(`Dev Wallet: ${tokenAmount.toFixed(2)} tokens`);
+		} catch (error) {
+			console.log(`Dev Wallet: No tokens or error`);
+		}
+		
+		// Bundle wallet token balances
+		let totalTokens = 0;
+		for (let i = 0; i < keypairs.length; i++) {
+			try {
+				const tokenAccount = await spl.getAssociatedTokenAddress(mint, keypairs[i].publicKey);
+				const tokenBalance = await connection.getTokenAccountBalance(tokenAccount);
+				const tokenAmount = Number(tokenBalance.value.amount) / 1e6;
+				totalTokens += tokenAmount;
+				console.log(`  Wallet ${i + 1}: ${tokenAmount.toFixed(2)} tokens`);
+			} catch (error) {
+				// Token account doesn't exist or no tokens - silently skip
+			}
+		}
+		
+		if (totalTokens > 0) {
+			console.log(`\n📊 Total tokens in bundle wallets: ${totalTokens.toFixed(2)} tokens`);
+		}
+	} else {
+		console.log("\n⚠️  No token mint found. Token balances will be available after launch.");
+	}
+	
+	console.log("\n");
+}
+
+export { checkAllBalances };
+
 export async function sender() {
 	let running = true;
 
 	while (running) {
-		console.log("\nBuyer UI:");
-		console.log("1. Create LUT");
-		console.log("2. Extend LUT Bundle");
-		console.log("3. Simulate Buys");
-		console.log("4. Send Simulation SOL Bundle");
-		console.log("5. Reclaim Buyers Sol");
+		try {
+			const setupChoice = await MenuUI.showSetupMenu();
 
-		const answer = prompt("Choose an option or 'exit': "); // Use prompt-sync for user input
+			switch (setupChoice.action) {
+				case "lut":
+					await createLUT();
+					break;
+				case "extend":
+					await extendLUT();
+					break;
+				case "simulate":
+					await simulateAndWriteBuys();
+					break;
+				case "back":
+					running = false;
+					break;
+			}
 
-		switch (answer) {
-			case "1":
-				await createLUT();
-				break;
-			case "2":
-				await extendLUT();
-				break;
-			case "3":
-				await simulateAndWriteBuys();
-				break;
-			case "4":
-				await generateATAandSOL();
-				break;
-			case "5":
-				await createReturns();
-				break;
-			case "exit":
-				running = false;
-				break;
-			default:
-				console.log("Invalid option, please choose again.");
+			if (running && setupChoice.action !== "back") {
+				console.log("\nPress Enter to continue...");
+				await new Promise((resolve) => {
+					process.stdin.once("data", resolve);
+				});
+			}
+		} catch (error) {
+			console.error("\n❌ Error:", error);
+			running = false;
 		}
 	}
-
-	console.log("Exiting...");
 }
