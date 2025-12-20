@@ -1,8 +1,7 @@
 import { connection, rpc, wallet, payer, RayLiqPoolv4 } from "../config";
 import { PublicKey, VersionedTransaction, SYSVAR_RENT_PUBKEY, TransactionMessage, SystemProgram, Keypair, LAMPORTS_PER_SOL, TransactionInstruction } from "@solana/web3.js";
 import { loadKeypairs } from "./createKeys";
-import { searcherClient } from "./clients/jito";
-import { Bundle as JitoBundle } from "jito-ts/dist/sdk/block-engine/types.js";
+import { sendBundle as sendBundleUtil } from "./utils/bundleSender";
 import { MenuUI } from "./ui/menu";
 import inquirer from "inquirer";
 import * as spl from "@solana/spl-token";
@@ -21,57 +20,6 @@ function chunkArray<T>(array: T[], size: number): T[][] {
 	return Array.from({ length: Math.ceil(array.length / size) }, (v, i) => array.slice(i * size, i * size + size));
 }
 
-async function sendBundle(bundledTxns: VersionedTransaction[]) {
-	/*
-    // Simulate each transaction
-    for (const tx of bundledTxns) {
-        try {
-            const simulationResult = await connection.simulateTransaction(tx, { commitment: "processed" });
-
-            if (simulationResult.value.err) {
-                console.error("Simulation error for transaction:", simulationResult.value.err);
-            } else {
-                console.log("Simulation success for transaction. Logs:");
-                simulationResult.value.logs?.forEach(log => console.log(log));
-            }
-        } catch (error) {
-            console.error("Error during simulation:", error);
-        }
-    }
-    */
-
-	try {
-		const bundleId = await searcherClient.sendBundle(new JitoBundle(bundledTxns, bundledTxns.length));
-		console.log(`Bundle ${bundleId} sent.`);
-
-		/*
-        // Assuming onBundleResult returns a Promise<BundleResult>
-        const result = await new Promise((resolve, reject) => {
-            searcherClient.onBundleResult(
-            (result) => {
-                console.log('Received bundle result:', result);
-                resolve(result); // Resolve the promise with the result
-            },
-            (e: Error) => {
-                console.error('Error receiving bundle result:', e);
-                reject(e); // Reject the promise if there's an error
-            }
-            );
-        });
-    
-        console.log('Result:', result);
-        */
-	} catch (error) {
-		const err = error as any;
-		console.error("Error sending bundle:", err.message);
-
-		if (err?.message?.includes("Bundle Dropped, no connected leader up soon")) {
-			console.error("Error sending bundle: Bundle Dropped, no connected leader up soon.");
-		} else {
-			console.error("An unexpected error occurred:", err.message);
-		}
-	}
-}
 
 export async function sellXPercentageRAY() {
 	// Start selling
@@ -239,7 +187,7 @@ export async function sellXPercentageRAY() {
 
 	bundledTxns.push(sellTx);
 
-	await sendBundle(bundledTxns);
+	await sendBundleUtil(bundledTxns);
 
 	return;
 }

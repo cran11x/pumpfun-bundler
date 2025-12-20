@@ -1,7 +1,7 @@
 import inquirer from 'inquirer';
 
 export interface MainMenuChoice {
-	action: 'launch' | 'wallet' | 'setup' | 'sell' | 'exit';
+	action: 'launch' | 'wallet' | 'setup' | 'sell' | 'test' | 'exit';
 }
 
 export interface WalletMenuChoice {
@@ -14,6 +14,10 @@ export interface SetupMenuChoice {
 
 export interface SellMenuChoice {
 	action: 'pumpfun' | 'raydium' | 'back';
+}
+
+export interface TestMenuChoice {
+	action: 'validate' | 'health' | 'balance' | 'rpc' | 'back';
 }
 
 export class MenuUI {
@@ -40,14 +44,18 @@ export class MenuUI {
 					name: '🔧 Advanced Setup (LUT, Manual Bundles)',
 					value: 'setup',
 				},
-				{
-					name: '📉 Sell Tokens (Pump.Fun / Raydium)',
-					value: 'sell',
-				},
-				{
-					name: '❌ Exit',
-					value: 'exit',
-				},
+			{
+				name: '📉 Sell Tokens (Pump.Fun / Raydium)',
+				value: 'sell',
+			},
+			{
+				name: '🧪 Test & Validation Tools',
+				value: 'test',
+			},
+			{
+				name: '❌ Exit',
+				value: 'exit',
+			},
 			],
 		});
 
@@ -320,6 +328,43 @@ export class MenuUI {
 		});
 
 		return confirmed;
+	}
+
+	static async showTestMenu(): Promise<TestMenuChoice> {
+		console.clear();
+		console.log('╔════════════════════════════════════════╗');
+		console.log('║      🧪 Test & Validation Menu        ║');
+		console.log('╚════════════════════════════════════════╝\n');
+
+		const { action } = await inquirer.prompt<TestMenuChoice>({
+			type: 'list',
+			name: 'action',
+			message: 'Choose a test option:',
+			choices: [
+				{
+					name: '✅ Pre-Launch Validacija',
+					value: 'validate',
+				},
+				{
+					name: '💚 Health Check (RPC & Jito)',
+					value: 'health',
+				},
+				{
+					name: '📊 Provera Balansa',
+					value: 'balance',
+				},
+				{
+					name: '🔗 Test RPC Konekcije',
+					value: 'rpc',
+				},
+				{
+					name: '⬅️  Back to Main Menu',
+					value: 'back',
+				},
+			],
+		});
+
+		return { action };
 	}
 }
 

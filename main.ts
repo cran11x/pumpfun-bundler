@@ -26,6 +26,9 @@ async function main() {
 				case "sell":
 					running = await handleSellMenu();
 					break;
+				case "test":
+					running = await handleTestMenu();
+					break;
 				case "exit":
 					running = false;
 					break;
@@ -118,6 +121,65 @@ async function handleSellMenu(): Promise<boolean> {
 		case "raydium":
 			await sellXPercentageRAY();
 			return true;
+		case "back":
+			return true;
+	}
+	return true;
+}
+
+async function handleTestMenu(): Promise<boolean> {
+	const testChoice = await MenuUI.showTestMenu();
+
+	switch (testChoice.action) {
+		case "validate":
+			const { validatePreLaunch } = await import("./src/utils/validations");
+			const result = await validatePreLaunch();
+			console.log("\n📋 REZULTATI VALIDACIJE:");
+			if (result.success) {
+				console.log("✅ Sve validacije prošle!");
+			} else {
+				console.log("❌ Greške:");
+				result.errors.forEach((err) => console.log(`   - ${err}`));
+			}
+			if (result.warnings.length > 0) {
+				console.log("\n⚠️  Upozorenja:");
+				result.warnings.forEach((warn) => console.log(`   - ${warn}`));
+			}
+			return true;
+
+		case "health":
+			const { healthCheck } = await import("./src/utils/healthCheck");
+			const health = await healthCheck();
+			console.log("\n💚 HEALTH CHECK:");
+			console.log(`RPC: ${health.rpc ? "✅" : "❌"}`);
+			console.log(`Jito: ${health.jito ? "✅" : "❌"}`);
+			console.log(`Network: ${health.network}`);
+			console.log(`Slot: ${health.slot || "N/A"}`);
+			if (health.errors.length > 0) {
+				console.log("\n❌ Greške:");
+				health.errors.forEach((err) => console.log(`   - ${err}`));
+			}
+			return true;
+
+		case "balance":
+			const { checkAllBalances } = await import("./src/senderUI");
+			await checkAllBalances();
+			return true;
+
+		case "rpc":
+			const { connection } = await import("./config");
+			console.log("\n🔗 Testiranje RPC konekcije...");
+			try {
+				const slot = await connection.getSlot("finalized");
+				const blockHeight = await connection.getBlockHeight("finalized");
+				console.log(`✅ RPC konekcija OK`);
+				console.log(`   Slot: ${slot}`);
+				console.log(`   Block Height: ${blockHeight}`);
+			} catch (error) {
+				console.error(`❌ RPC konekcija neuspešna: ${error}`);
+			}
+			return true;
+
 		case "back":
 			return true;
 	}

@@ -2,8 +2,7 @@ import { Keypair, PublicKey, SystemProgram, TransactionInstruction, VersionedTra
 import { loadKeypairs } from "./createKeys";
 import { wallet, connection, payer } from "../config";
 import * as spl from "@solana/spl-token";
-import { searcherClient } from "./clients/jito";
-import { Bundle as JitoBundle } from "jito-ts/dist/sdk/block-engine/types.js";
+import { sendBundle as sendBundleUtil } from "./utils/bundleSender";
 import { MenuUI } from "./ui/menu";
 import inquirer from "inquirer";
 import { createLUT, extendLUT } from "./createLUT";
@@ -38,6 +37,7 @@ async function generateSOLTransferForKeypairs(tipAmt: number, steps: number = 24
 	// Dev wallet send first
 	if (!existingData[wallet.publicKey.toString()] || !existingData[wallet.publicKey.toString()].solAmount) {
 		console.log(`Missing solAmount for dev wallet, skipping.`);
+		return ixs; // Return early if no data for dev wallet
 	}
 
 	const solAmount = parseFloat(existingData[wallet.publicKey.toString()].solAmount);
@@ -156,42 +156,9 @@ async function processInstructionsSOL(ixs: TransactionInstruction[], blockhash: 
 	return txns;
 }
 
-async function sendBundle(txns: VersionedTransaction[]) {
-	/*
-    // Simulate each transaction
-    for (const tx of txns) {
-        try {
-            const simulationResult = await connection.simulateTransaction(tx, { commitment: "processed" });
 
-            if (simulationResult.value.err) {
-                console.error("Simulation error for transaction:", simulationResult.value.err);
-            } else {
-                console.log("Simulation success for transaction. Logs:");
-                simulationResult.value.logs?.forEach(log => console.log(log));
-            }
-        } catch (error) {
-            console.error("Error during simulation:", error);
-        }
-    }
-    */
-
-	try {
-		const bundleId = await searcherClient.sendBundle(new JitoBundle(txns, txns.length));
-		console.log(`Bundle ${bundleId} sent.`);
-	} catch (error) {
-		const err = error as any;
-		console.error("Error sending bundle:", err.message);
-
-		if (err?.message?.includes("Bundle Dropped, no connected leader up soon")) {
-			console.error("Error sending bundle: Bundle Dropped, no connected leader up soon.");
-		} else {
-			console.error("An unexpected error occurred:", err.message);
-		}
-	}
-}
-
-export async function generateATAandSOL() {
-	const jitoTip = await MenuUI.promptJitoTip();
+export async function generateATAandSOL(jitoTipParam?: number) {
+	const jitoTip = jitoTipParam !== undefined ? jitoTipParam : await MenuUI.promptJitoTip();
 	const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
 	const { blockhash } = await connection.getLatestBlockhash();
@@ -202,7 +169,7 @@ export async function generateATAandSOL() {
 	const solTxns = await processInstructionsSOL(solIxs, blockhash);
 	sendTxns.push(...solTxns);
 
-	await sendBundle(sendTxns);
+	await sendBundleUtil(sendTxns);
 }
 
 export async function createReturns() {
@@ -276,7 +243,7 @@ export async function createReturns() {
 		txsSigned.push(versionedTx);
 	}
 
-	await sendBundle(txsSigned);
+	await sendBundleUtil(txsSigned);
 }
 
 async function simulateAndWriteBuys() {

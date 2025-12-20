@@ -11,8 +11,7 @@ import {
 	AddressLookupTableAccount,
 } from "@solana/web3.js";
 import { loadKeypairs } from "./createKeys";
-import { searcherClient } from "./clients/jito";
-import { Bundle as JitoBundle } from "jito-ts/dist/sdk/block-engine/types.js";
+import { sendBundle as sendBundleUtil } from "./utils/bundleSender";
 import { MenuUI } from "./ui/menu";
 import * as spl from "@solana/spl-token";
 import bs58 from "bs58";
@@ -26,7 +25,17 @@ import * as anchor from "@coral-xyz/anchor";
 
 const keyInfoPath = path.join(__dirname, "keyInfo.json");
 
-export async function buyBundle() {
+export interface TokenInfo {
+	name: string;
+	symbol: string;
+	description: string;
+	twitter?: string;
+	telegram?: string;
+	website?: string;
+	jitoTip: number;
+}
+
+export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: string) {
 	const provider = new anchor.AnchorProvider(new anchor.web3.Connection(rpc), new anchor.Wallet(wallet), { commitment: "confirmed" });
 
 	// Initialize pumpfun anchor
@@ -44,26 +53,29 @@ export async function buyBundle() {
 		keyInfo = JSON.parse(existingData);
 	}
 
+	if (!keyInfo.addressLUT) {
+		throw new Error("Address LUT not found in keyInfo. Please create a LUT first.");
+	}
+
 	const lut = new PublicKey(keyInfo.addressLUT.toString());
 
 	const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
 
 	if (lookupTableAccount == null) {
 		console.log("Lookup table account not found!");
-		process.exit(0);
+		throw new Error("Lookup table account not found!");
 	}
 
-	// -------- step 1: ask necessary questions for pool build --------
-	const tokenInfo = await MenuUI.promptTokenInfo();
+	// Use provided token info
 	const name = tokenInfo.name;
 	const symbol = tokenInfo.symbol;
 	
 	console.log(`🔄 Unique token: ${name} (${symbol})`);
 	
 	const description = tokenInfo.description;
-	const twitter = tokenInfo.twitter;
-	const telegram = tokenInfo.telegram;
-	const website = tokenInfo.website;
+	const twitter = tokenInfo.twitter || "";
+	const telegram = tokenInfo.telegram || "";
+	const website = tokenInfo.website || "";
 	// Adjust tip based on available balance
 	const tipInput = tokenInfo.jitoTip;
 	
@@ -86,23 +98,24 @@ export async function buyBundle() {
 	console.log(`💰 Using tip: ${tipAmt / LAMPORTS_PER_SOL} SOL`);
 
 	// -------- step 2: build pool init + dev snipe --------
-	const files = await fs.promises.readdir("./img");
+	const imgPath = imagePath || "./img";
+	const files = await fs.promises.readdir(imgPath);
 	if (files.length == 0) {
 		console.log("No image found in the img folder");
-		return;
+		throw new Error("No image found in the img folder");
 	}
 	if (files.length > 1) {
 		console.log("Multiple images found in the img folder, please only keep one image");
-		return;
+		throw new Error("Multiple images found in the img folder");
 	}
-	const data: Buffer = fs.readFileSync(`./img/${files[0]}`);
+	const data: Buffer = fs.readFileSync(`${imgPath}/${files[0]}`);
 
 	let formData = new FormData();
 	if (data) {
 		formData.append("file", new Blob([new Uint8Array(data)], { type: "image/jpeg" }));
 	} else {
 		console.log("No image found");
-		return;
+		throw new Error("No image found");
 	}
 
 	formData.append("name", name);
@@ -124,11 +137,23 @@ export async function buyBundle() {
 		console.log("Metadata URI: ", metadata_uri);
 	} catch (error) {
 		console.error("Error uploading metadata:", error);
+		throw error;
 	}
 
 	// FORENSIC SOLUTION: Generate CRYPTOGRAPHICALLY UNIQUE mint for EVERY attempt
 	const mintKp = Keypair.generate();
 	console.log(`🔑 FRESH Mint Generated: ${mintKp.publicKey.toBase58()}`);
+
+	// --- FIX START: Save new mint to keyInfo.json ---
+	keyInfo.mint = mintKp.publicKey.toString();
+	keyInfo.mintPk = bs58.encode(mintKp.secretKey);
+	try {
+		fs.writeFileSync(keyInfoPath, JSON.stringify(keyInfo, null, 2));
+		console.log(`💾 Updated keyInfo.json with new mint: ${mintKp.publicKey.toBase58()}`);
+	} catch (error) {
+		console.error("❌ Failed to save new mint to keyInfo.json:", error);
+	}
+	// --- FIX END ---
 	
 	// Pre-flight state verification (Idempotency Check)
 	const accountInfo = await connection.getAccountInfo(mintKp.publicKey);
@@ -199,6 +224,7 @@ export async function buyBundle() {
 	const keypairInfo = keyInfo[wallet.publicKey.toString()];
 	if (!keypairInfo) {
 		console.log(`No key info found for keypair: ${wallet.publicKey.toString()}`);
+		throw new Error(`No key info found for keypair: ${wallet.publicKey.toString()}`);
 	}
 
 	// Fix: Use solAmount for buying (not tokenAmount which is 0)
@@ -309,7 +335,45 @@ export async function buyBundle() {
 	console.log(`   2-${bundledTxns.length}. Bundler wallet buys (all atomic)`);
 	console.log(`\n💡 All transactions will execute in the same block - snipers cannot front-run!\n`);
 	
-	await sendBundle(bundledTxns);
+	await sendBundleUtil(bundledTxns);
+	
+	return { success: true, mint: mintKp.publicKey.toString() };
+}
+
+export async function buyBundle() {
+	const provider = new anchor.AnchorProvider(new anchor.web3.Connection(rpc), new anchor.Wallet(wallet), { commitment: "confirmed" });
+
+	// Initialize pumpfun anchor
+	const IDL_PumpFun = JSON.parse(fs.readFileSync("./pumpfun-IDL.json", "utf-8")) as anchor.Idl;
+
+	const program = new anchor.Program(IDL_PumpFun, provider);
+
+	// Start create bundle
+	const bundledTxns: VersionedTransaction[] = [];
+	const keypairs: Keypair[] = loadKeypairs();
+
+	let keyInfo: { [key: string]: any } = {};
+	if (fs.existsSync(keyInfoPath)) {
+		const existingData = fs.readFileSync(keyInfoPath, "utf-8");
+		keyInfo = JSON.parse(existingData);
+	}
+
+	if (!keyInfo.addressLUT) {
+		throw new Error("Address LUT not found in keyInfo. Please create a LUT first.");
+	}
+
+	const lut = new PublicKey(keyInfo.addressLUT.toString());
+
+	const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
+
+	if (lookupTableAccount == null) {
+		console.log("Lookup table account not found!");
+		process.exit(0);
+	}
+
+	// -------- step 1: ask necessary questions for pool build --------
+	const tokenInfo = await MenuUI.promptTokenInfo();
+	return buyBundleWithParams(tokenInfo);
 }
 
 async function createWalletSwaps(
@@ -439,54 +503,3 @@ function chunkArray<T>(array: T[], size: number): T[][] {
 	return Array.from({ length: Math.ceil(array.length / size) }, (v, i) => array.slice(i * size, i * size + size));
 }
 
-export async function sendBundle(bundledTxns: VersionedTransaction[]) {
-	/*
-    // Simulate each transaction
-    for (const tx of bundledTxns) {
-        try {
-            const simulationResult = await connection.simulateTransaction(tx, { commitment: "processed" });
-
-            if (simulationResult.value.err) {
-                console.error("Simulation error for transaction:", simulationResult.value.err);
-            } else {
-                console.log("Simulation success for transaction. Logs:");
-                simulationResult.value.logs?.forEach(log => console.log(log));
-            }
-        } catch (error) {
-            console.error("Error during simulation:", error);
-        }
-    }
-    //*/
-
-	try {
-		const bundleId = await searcherClient.sendBundle(new JitoBundle(bundledTxns, bundledTxns.length));
-		console.log(`Bundle ${bundleId} sent.`);
-
-		///*
-		// Assuming onBundleResult returns a Promise<BundleResult>
-		const result = await new Promise((resolve, reject) => {
-			searcherClient.onBundleResult(
-				(result) => {
-					console.log("Received bundle result:", result);
-					resolve(result); // Resolve the promise with the result
-				},
-				(e: Error) => {
-					console.error("Error receiving bundle result:", e);
-					reject(e); // Reject the promise if there's an error
-				}
-			);
-		});
-
-		console.log("Result:", result);
-		//*/
-	} catch (error) {
-		const err = error as any;
-		console.error("Error sending bundle:", err.message);
-
-		if (err?.message?.includes("Bundle Dropped, no connected leader up soon")) {
-			console.error("Error sending bundle: Bundle Dropped, no connected leader up soon.");
-		} else {
-			console.error("An unexpected error occurred:", err.message);
-		}
-	}
-}

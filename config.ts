@@ -16,12 +16,22 @@ dotenv.config();
 // Never commit keypair files or expose private keys in version control
 
 // PRIV KEY OF DEPLOYER - Using existing keypair for demo
-const keypairData = JSON.parse(fs.readFileSync("./src/keypairs/keypair1.json", "utf-8"));
-export const wallet = Keypair.fromSecretKey(new Uint8Array(keypairData));
+// For tests, use a generated keypair if file doesn't exist
+let wallet: Keypair;
+let payer: Keypair;
 
+const keypairPath = "./src/keypairs/keypair1.json";
+if (fs.existsSync(keypairPath)) {
+  const keypairData = JSON.parse(fs.readFileSync(keypairPath, "utf-8"));
+  wallet = Keypair.fromSecretKey(new Uint8Array(keypairData));
+  payer = Keypair.fromSecretKey(new Uint8Array(keypairData));
+} else {
+  // For tests or when keypair file doesn't exist, generate a new keypair
+  wallet = Keypair.generate();
+  payer = Keypair.generate();
+}
 
-// PRIV KEY OF FEEPAYER - Using same keypair for demo (you should use different keypairs)
-export const payer = Keypair.fromSecretKey(new Uint8Array(keypairData));
+export { wallet, payer };
 
 
 // RPC endpoint - Read from environment variable or use fallback

@@ -4,8 +4,7 @@ import path from 'path';
 import { wallet, connection, PUMP_PROGRAM, payer } from '../config';
 import { MenuUI } from './ui/menu';
 import inquirer from 'inquirer';
-import { searcherClient } from "./clients/jito";
-import { Bundle as JitoBundle } from 'jito-ts/dist/sdk/block-engine/types.js';
+import { sendBundle as sendBundleUtil } from "./utils/bundleSender";
 import { getRandomTipAccount } from "./clients/config";
 import { lookupTableProvider } from "./clients/LookupTableProvider";
 import { loadKeypairs } from './createKeys';
@@ -22,17 +21,24 @@ setProvider(provider);
 
 const program = new Program(idl as any, provider);
 
-export async function extendLUT() {
+export async function extendLUT(jitoTipParam?: number) {
     // -------- step 1: ask nessesary questions for LUT build --------
     let vanityPK = null;
+    let jitoTip: number;
+    let wantVanity = false;
 
-    const { wantVanity } = await inquirer.prompt<{ wantVanity: boolean }>({
-        type: 'confirm',
-        name: 'wantVanity',
-        message: 'Do you want to import a custom vanity address?',
-        default: false,
-    });
-    const jitoTip = await MenuUI.promptJitoTip();
+    if (jitoTipParam !== undefined) {
+        jitoTip = jitoTipParam;
+    } else {
+        const vanityPrompt = await inquirer.prompt<{ wantVanity: boolean }>({
+            type: 'confirm',
+            name: 'wantVanity',
+            message: 'Do you want to import a custom vanity address?',
+            default: false,
+        });
+        wantVanity = vanityPrompt.wantVanity;
+        jitoTip = await MenuUI.promptJitoTip();
+    }
     const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
     if (wantVanity) {
         const { vanityKey } = await inquirer.prompt<{ vanityKey: string }>({
@@ -240,17 +246,17 @@ export async function extendLUT() {
 
 
     // -------- step 7: send bundle --------
-    await sendBundle(bundledTxns1);
+    await sendBundleUtil(bundledTxns1);
     
 }
 
 
 
 
-export async function createLUT() {
+export async function createLUT(jitoTipParam?: number) {
 
     // -------- step 1: ask necessary questions for LUT build --------
-    const jitoTip = await MenuUI.promptJitoTip();
+    const jitoTip = jitoTipParam !== undefined ? jitoTipParam : await MenuUI.promptJitoTip();
     const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
     // Read existing data from poolInfo.json
@@ -324,7 +330,7 @@ export async function createLUT() {
 
 
     // -------- step 3: SEND BUNDLE --------
-    await sendBundle(bundledTxns);
+    await sendBundleUtil(bundledTxns);
 }
 
 
@@ -354,21 +360,6 @@ async function buildTxn(extendLUTixs: TransactionInstruction[], blockhash: strin
 
 
 
-async function sendBundle(bundledTxns: VersionedTransaction[]) {
-    try {
-        const bundleId = await searcherClient.sendBundle(new JitoBundle(bundledTxns, bundledTxns.length));
-        console.log(`Bundle ${bundleId} sent.`);
-    } catch (error) {
-        const err = error as any;
-        console.error("Error sending bundle:", err.message);
-    
-        if (err?.message?.includes('Bundle Dropped, no connected leader up soon')) {
-            console.error("Error sending bundle: Bundle Dropped, no connected leader up soon.");
-        } else {
-            console.error("An unexpected error occurred:", err.message);
-        }
-    }
-}
 
 
 /*

@@ -4,8 +4,10 @@ import path from 'path';
 import bs58 from 'bs58';
 import { MenuUI } from './ui/menu';
 
-const keypairsDir = path.join(__dirname, 'keypairs');
-const keyInfoPath = path.join(__dirname, 'keyInfo.json');
+// Use process.cwd() to ensure consistency with API server
+const projectRoot = process.cwd();
+const keypairsDir = path.join(projectRoot, 'src', 'keypairs');
+const keyInfoPath = path.join(projectRoot, 'src', 'keyInfo.json');
 
 interface IPoolInfo {
   [key: string]: any;
@@ -91,12 +93,27 @@ export function loadKeypairs(): Keypair[] {
   // Define a regular expression to match filenames like 'keypair1.json', 'keypair2.json', etc.
   const keypairRegex = /^keypair\d+\.json$/;
 
-  return fs.readdirSync(keypairsDir)
-    .filter(file => keypairRegex.test(file)) // Use the regex to test each filename
-    .map(file => {
+  try {
+    // Check if directory exists
+    if (!fs.existsSync(keypairsDir)) {
+      console.log(`Keypairs directory does not exist: ${keypairsDir}`);
+      return [];
+    }
+
+    const files = fs.readdirSync(keypairsDir);
+    console.log(`Found ${files.length} files in keypairs directory: ${keypairsDir}`);
+    
+    const keypairFiles = files.filter(file => keypairRegex.test(file));
+    console.log(`Found ${keypairFiles.length} keypair files matching pattern`);
+    
+    return keypairFiles.map(file => {
       const filePath = path.join(keypairsDir, file);
       const secretKeyString = fs.readFileSync(filePath, { encoding: 'utf8' });
       const secretKey = Uint8Array.from(JSON.parse(secretKeyString));
       return Keypair.fromSecretKey(secretKey);
     });
+  } catch (error) {
+    console.error(`Error loading keypairs from ${keypairsDir}:`, error);
+    return [];
+  }
 }
