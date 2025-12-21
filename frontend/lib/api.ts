@@ -8,7 +8,35 @@ export const api = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
+  withCredentials: false, // Don't send credentials for CORS
 });
+
+// Add request interceptor for debugging
+api.interceptors.request.use(
+  (config) => {
+    console.log(`[API] ${config.method?.toUpperCase()} ${config.url}`);
+    return config;
+  },
+  (error) => {
+    console.error("[API] Request error:", error);
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor for debugging
+api.interceptors.response.use(
+  (response) => {
+    console.log(`[API] ${response.config.method?.toUpperCase()} ${response.config.url} - Status: ${response.status}`);
+    return response;
+  },
+  (error) => {
+    console.error(`[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Error:`, error.message);
+    if (error.code === 'ERR_NETWORK') {
+      console.error("[API] Network error - is the API server running on http://localhost:3001?");
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Health check
 export const healthCheck = async () => {
@@ -16,10 +44,34 @@ export const healthCheck = async () => {
   return response.data;
 };
 
+// Helper function to retry API calls
+const retryApiCall = async <T>(
+  apiCall: () => Promise<T>,
+  retries = 3,
+  delay = 1000
+): Promise<T> => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await apiCall();
+    } catch (error: any) {
+      if (i === retries - 1) throw error;
+      if (error.code === 'ERR_NETWORK' || error.message?.includes('Network Error')) {
+        console.log(`Retrying API call... (${i + 1}/${retries})`);
+        await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('Failed after retries');
+};
+
 // Wallets
 export const getWallets = async () => {
-  const response = await api.get("/wallets");
-  return response.data;
+  return retryApiCall(async () => {
+    const response = await api.get("/wallets");
+    return response.data;
+  });
 };
 
 export const createWallets = async (count: number) => {
@@ -37,14 +89,39 @@ export const createWallets = async (count: number) => {
   }
 };
 
-export const fundWallets = async () => {
-  const response = await api.post("/wallets/fund");
-  return response.data;
+export const fundWallets = async (amountPerWallet?: number) => {
+  try {
+    const body: any = {};
+    if (amountPerWallet !== undefined) {
+      body.amountPerWallet = amountPerWallet;
+    }
+    const response = await api.post("/wallets/fund", body);
+    return response.data;
+  } catch (error: any) {
+    // Extract error message from API response
+    if (error.response?.data?.error) {
+      throw new Error(error.response.data.error);
+    }
+    // Handle network errors or other errors
+    if (error.message) {
+      throw new Error(error.message);
+    }
+    throw new Error("Failed to fund wallets. Please try again.");
+  }
 };
 
 export const getBalances = async () => {
-  const response = await api.get("/wallets/balances");
-  return response.data;
+  return retryApiCall(async () => {
+    const response = await api.get("/wallets/balances");
+    return response.data;
+  });
+};
+
+export const getMainWallet = async () => {
+  return retryApiCall(async () => {
+    const response = await api.get("/wallets/main");
+    return response.data;
+  });
 };
 
 // Launch

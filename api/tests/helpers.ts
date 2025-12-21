@@ -7,7 +7,7 @@ import * as dotenv from 'dotenv';
 import { healthCheck } from '../../src/utils/healthCheck';
 import { validatePreLaunch } from '../../src/utils/validations';
 import { loadKeypairs } from '../../src/createKeys';
-import { connection, wallet, payer } from '../../config';
+import { connection, wallet, payer, networkMode } from '../../config';
 import { LAMPORTS_PER_SOL, Keypair } from '@solana/web3.js';
 import * as fs from 'fs';
 
@@ -141,7 +141,55 @@ export function createTestApp() {
 
   app.post('/api/wallets/fund', async (req, res) => {
     try {
-      const { jitoTip = 0.01 } = req.body;
+      const { jitoTip = 0.01, amountPerWallet } = req.body || {};
+      
+      // Validate jitoTip
+      if (isNaN(jitoTip) || jitoTip < 0) {
+        return res.status(400).json({ 
+          error: `Invalid jitoTip: ${jitoTip}. Must be a non-negative number.` 
+        });
+      }
+      
+      // Validate prerequisites before funding
+      const keypairs = loadKeypairs();
+      if (keypairs.length === 0) {
+        return res.status(400).json({ 
+          error: "No wallets found. Please create wallets first." 
+        });
+      }
+
+      // Check if keyInfo.json exists and has solAmount data
+      const keyInfoPath = path.join(process.cwd(), "src", "keyInfo.json");
+      let poolInfo: any = {};
+      if (fs.existsSync(keyInfoPath)) {
+        poolInfo = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+      }
+
+      // Check if LUT exists
+      if (!poolInfo.addressLUT) {
+        return res.status(400).json({ 
+          error: "Lookup Table (LUT) not found. Please create a LUT first in Settings." 
+        });
+      }
+
+      // Check if solAmount data exists OR if amountPerWallet is provided
+      const hasSolAmountData = poolInfo[wallet.publicKey.toString()]?.solAmount;
+      
+      if (!hasSolAmountData && !amountPerWallet) {
+        return res.status(400).json({ 
+          error: "No buy amounts configured. Please either:\n1. Simulate buy amounts first (Advanced Setup > Simulate Buy Amounts), OR\n2. Provide 'amountPerWallet' parameter (e.g., 0.1 SOL per wallet)" 
+        });
+      }
+
+      // If amountPerWallet is provided, validate it
+      if (amountPerWallet !== undefined) {
+        const amount = parseFloat(amountPerWallet);
+        if (isNaN(amount) || amount <= 0) {
+          return res.status(400).json({ 
+            error: "Invalid amountPerWallet. Must be a positive number." 
+          });
+        }
+      }
       
       // Execute asynchronously and handle errors without blocking response
       (async () => {
@@ -155,7 +203,8 @@ export function createTestApp() {
       
       res.json({ 
         success: true, 
-        message: `Funding wallets initiated with jitoTip: ${jitoTip} SOL` 
+        message: `Funding wallets initiated with jitoTip: ${jitoTip} SOL${amountPerWallet ? ` (${amountPerWallet} SOL per wallet)` : ''}`,
+        network: networkMode
       });
     } catch (error: any) {
       res.status(500).json({ error: error.message });

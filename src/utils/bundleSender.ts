@@ -11,6 +11,7 @@ export interface BundleSendOptions {
 	skipSimulation?: boolean;
 	skipRetry?: boolean;
 	maxRetries?: number;
+	autoProceed?: boolean; // If true, automatically proceed without user confirmation
 }
 
 export async function simulateBundle(
@@ -59,6 +60,7 @@ export async function sendBundle(
 		skipSimulation = false,
 		skipRetry = false,
 		maxRetries = 3,
+		autoProceed = false,
 	} = options;
 
 	// Simulacija pre slanja
@@ -66,17 +68,23 @@ export async function sendBundle(
 		const simulationPassed = await simulateBundle(bundledTxns);
 		if (!simulationPassed) {
 			Logger.warn("Neke simulacije nisu prošle!");
-			const { proceed } = await inquirer.prompt([
-				{
-					type: "confirm",
-					name: "proceed",
-					message: "Da li želite da nastavite sa slanjem bundle-a?",
-					default: false,
-				},
-			]);
-			if (!proceed) {
-				Logger.info("Slanje bundle-a otkazano od strane korisnika");
-				throw new Error("Bundle send cancelled by user");
+			
+			// If autoProceed is true, skip user confirmation (for API calls)
+			if (!autoProceed) {
+				const { proceed } = await inquirer.prompt([
+					{
+						type: "confirm",
+						name: "proceed",
+						message: "Da li želite da nastavite sa slanjem bundle-a?",
+						default: false,
+					},
+				]);
+				if (!proceed) {
+					Logger.info("Slanje bundle-a otkazano od strane korisnika");
+					throw new Error("Bundle send cancelled by user");
+				}
+			} else {
+				Logger.info("Automatski nastavljanje sa slanjem bundle-a (autoProceed=true)");
 			}
 		}
 	}

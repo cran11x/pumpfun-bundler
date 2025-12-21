@@ -221,7 +221,7 @@ export async function sellRaydiumWithParams(percentage: number, marketId: string
     throw new Error("Cannot sell more than 25% at a time");
   }
   
-  const { derivePoolKeys, IPoolKeys } = await import("./clients/poolKeysReassigned");
+  const { derivePoolKeys } = await import("./clients/poolKeysReassigned");
   const keys = await derivePoolKeys(marketID);
   
   if (keys == null) {
@@ -385,6 +385,16 @@ function makeSwapForSell(poolKeys: any, wSolATA: PublicKey, TokenATA: PublicKey,
 
 // Wrapper for generateATAandSOL with parameters
 export async function fundWalletsWithParams(jitoTip: number = 0.01) {
-  const { generateATAandSOL } = await import("./senderUI");
-  return generateATAandSOL(jitoTip);
+  try {
+    if (jitoTip < 0 || isNaN(jitoTip)) {
+      throw new Error(`Invalid jitoTip parameter: ${jitoTip}. Must be a non-negative number.`);
+    }
+
+    const { generateATAandSOL } = await import("./senderUI");
+    return await generateATAandSOL(jitoTip);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+    console.error(`[fundWalletsWithParams] Error:`, errorMsg);
+    throw error; // Re-throw to allow API endpoint to handle
+  }
 }

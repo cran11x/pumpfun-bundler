@@ -31,16 +31,23 @@ async function generateSOLTransferForKeypairs(tipAmt: number, steps: number = 24
 
 	let existingData: any = {};
 	if (fs.existsSync(keyInfoPath)) {
-		existingData = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+		try {
+			existingData = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+		} catch (error) {
+			throw new Error(`Failed to read keyInfo.json: ${error instanceof Error ? error.message : 'Unknown error'}`);
+		}
 	}
 
 	// Dev wallet send first
 	if (!existingData[wallet.publicKey.toString()] || !existingData[wallet.publicKey.toString()].solAmount) {
-		console.log(`Missing solAmount for dev wallet, skipping.`);
-		return ixs; // Return early if no data for dev wallet
+		throw new Error(`Missing solAmount for dev wallet (${wallet.publicKey.toString()}). Please configure buy amounts first or provide amountPerWallet parameter.`);
 	}
 
-	const solAmount = parseFloat(existingData[wallet.publicKey.toString()].solAmount);
+		const solAmount = parseFloat(existingData[wallet.publicKey.toString()].solAmount);
+
+	if (isNaN(solAmount) || solAmount <= 0) {
+		throw new Error(`Invalid solAmount for dev wallet: ${existingData[wallet.publicKey.toString()].solAmount}. Must be a positive number.`);
+	}
 
 	ixs.push(
 		SystemProgram.transfer({
@@ -49,18 +56,27 @@ async function generateSOLTransferForKeypairs(tipAmt: number, steps: number = 24
 			lamports: Math.floor((solAmount * 1.015 + 0.0025) * LAMPORTS_PER_SOL),
 		})
 	);
+	console.log(`Prepared transfer of ${(solAmount * 1.015 + 0.0025).toFixed(3)} SOL to dev wallet (${wallet.publicKey.toString()})`);
 
 	// Loop through the keypairs and process each one
+	let skippedWallets: string[] = [];
 	for (let i = 0; i < Math.min(steps, keypairs.length); i++) {
 		const keypair = keypairs[i];
 		const keypairPubkeyStr = keypair.publicKey.toString();
 
 		if (!existingData[keypairPubkeyStr] || !existingData[keypairPubkeyStr].solAmount) {
-			console.log(`Missing solAmount for wallet ${i + 1}, skipping.`);
+			console.warn(`Missing solAmount for wallet ${i + 1} (${keypairPubkeyStr}), skipping.`);
+			skippedWallets.push(keypairPubkeyStr);
 			continue;
 		}
 
 		const solAmount = parseFloat(existingData[keypairPubkeyStr].solAmount);
+
+		if (isNaN(solAmount) || solAmount <= 0) {
+			console.warn(`Invalid solAmount for wallet ${i + 1} (${keypairPubkeyStr}): ${existingData[keypairPubkeyStr].solAmount}, skipping.`);
+			skippedWallets.push(keypairPubkeyStr);
+			continue;
+		}
 
 		try {
 			ixs.push(
@@ -70,13 +86,25 @@ async function generateSOLTransferForKeypairs(tipAmt: number, steps: number = 24
 					lamports: Math.floor((solAmount * 1.015 + 0.0025) * LAMPORTS_PER_SOL),
 				})
 			);
-			console.log(`Sent ${(solAmount * 1.015 + 0.0025).toFixed(3)} SOL to Wallet ${i + 1} (${keypair.publicKey.toString()})`);
+			console.log(`Prepared transfer of ${(solAmount * 1.015 + 0.0025).toFixed(3)} SOL to Wallet ${i + 1} (${keypair.publicKey.toString()})`);
 		} catch (error) {
-			console.error(`Error creating transfer instruction for wallet ${i + 1}:`, error);
+			const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+			console.error(`Error creating transfer instruction for wallet ${i + 1} (${keypairPubkeyStr}):`, errorMsg);
+			skippedWallets.push(keypairPubkeyStr);
 			continue;
 		}
 	}
 
+	if (skippedWallets.length > 0) {
+		console.warn(`Warning: ${skippedWallets.length} wallet(s) were skipped due to missing or invalid solAmount data.`);
+	}
+
+	// Check if we have any transfer instructions (should have at least dev wallet transfer)
+	if (ixs.length === 0) {
+		throw new Error(`No valid transfer instructions created. Check solAmount configuration for wallets.`);
+	}
+
+	// Add tip instruction at the end
 	ixs.push(
 		SystemProgram.transfer({
 			fromPubkey: payer.publicKey,
@@ -103,13 +131,16 @@ async function createAndSignVersionedTxWithKeypairs(instructionsChunk: Transacti
 		poolInfo = JSON.parse(data);
 	}
 
+	if (!poolInfo.addressLUT) {
+		throw new Error("Lookup Table (LUT) address not found in keyInfo.json. Please create a LUT first.");
+	}
+
 	const lut = new PublicKey(poolInfo.addressLUT.toString());
 
 	const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
 
 	if (lookupTableAccount == null) {
-		console.log("Lookup table account not found!");
-		process.exit(0);
+		throw new Error(`Lookup table account not found at address: ${lut.toString()}. Please verify the LUT address is correct.`);
 	}
 
 	const addressesMain: PublicKey[] = [];
@@ -158,18 +189,40 @@ async function processInstructionsSOL(ixs: TransactionInstruction[], blockhash: 
 
 
 export async function generateATAandSOL(jitoTipParam?: number) {
-	const jitoTip = jitoTipParam !== undefined ? jitoTipParam : await MenuUI.promptJitoTip();
-	const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
+	try {
+		const jitoTip = jitoTipParam !== undefined ? jitoTipParam : await MenuUI.promptJitoTip();
+		
+		if (jitoTip < 0 || isNaN(jitoTip)) {
+			throw new Error(`Invalid jitoTip: ${jitoTip}. Must be a non-negative number.`);
+		}
 
-	const { blockhash } = await connection.getLatestBlockhash();
-	const sendTxns: VersionedTransaction[] = [];
+		const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
-	const solIxs = await generateSOLTransferForKeypairs(jitoTipAmt);
+		console.log(`[Funding] Starting wallet funding process with jitoTip: ${jitoTip} SOL`);
+		
+		const { blockhash } = await connection.getLatestBlockhash();
+		const sendTxns: VersionedTransaction[] = [];
 
-	const solTxns = await processInstructionsSOL(solIxs, blockhash);
-	sendTxns.push(...solTxns);
+		console.log(`[Funding] Generating SOL transfer instructions...`);
+		const solIxs = await generateSOLTransferForKeypairs(jitoTipAmt);
+		
+		if (solIxs.length === 0) {
+			throw new Error("No transfer instructions generated. Check wallet configuration and solAmount data.");
+		}
 
-	await sendBundleUtil(sendTxns);
+		console.log(`[Funding] Created ${solIxs.length} transfer instructions. Processing into transactions...`);
+		const solTxns = await processInstructionsSOL(solIxs, blockhash);
+		sendTxns.push(...solTxns);
+
+		console.log(`[Funding] Sending ${sendTxns.length} transaction(s) via bundle...`);
+		// Use autoProceed for API calls to skip user interaction
+		await sendBundleUtil(sendTxns, { autoProceed: true });
+		console.log(`[Funding] Wallet funding completed successfully.`);
+	} catch (error) {
+		const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+		console.error(`[Funding] Error in generateATAandSOL:`, errorMsg);
+		throw error; // Re-throw to allow caller to handle
+	}
 }
 
 export async function createReturns() {

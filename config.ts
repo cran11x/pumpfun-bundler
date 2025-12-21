@@ -10,8 +10,52 @@ import * as dotenv from "dotenv";
 // Load environment variables
 dotenv.config();
 
+// ============================================
+// NETWORK CONFIGURATION
+// ============================================
+// Network mode: "mainnet" | "devnet"
+// Set NETWORK_MODE in .env file to switch networks
+export type NetworkMode = "mainnet" | "devnet";
 
+const heliusApiKey = process.env.HELIUS_API_KEY || "aad77f97-2471-47d4-ba2d-af877586f97e";
 
+// Determine network mode from environment
+export const networkMode: NetworkMode = (process.env.NETWORK_MODE === "devnet") ? "devnet" : "mainnet";
+
+// Generate RPC URL based on network mode
+const getHeliusRpcUrl = (network: NetworkMode, apiKey: string): string => {
+  if (network === "devnet") {
+    return `https://devnet.helius-rpc.com/?api-key=${apiKey}`;
+  }
+  return `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
+};
+
+// RPC endpoint - Can be overridden with HELIUS_RPC_URL env var
+const defaultRpc = getHeliusRpcUrl(networkMode, heliusApiKey);
+export const rpc = process.env.HELIUS_RPC_URL || defaultRpc;
+
+// Log current network on startup
+console.log(`🌐 Network: ${networkMode.toUpperCase()}`);
+console.log(`🔗 RPC: ${rpc.substring(0, 50)}...`);
+
+// Helper function to verify we're on devnet
+export function isDevnet(): boolean {
+  return networkMode === "devnet";
+}
+
+// Helper function to verify we're on mainnet
+export function isMainnet(): boolean {
+  return networkMode === "mainnet";
+}
+
+// Helper function to get network mode with validation
+export function getNetworkMode(): NetworkMode {
+  return networkMode;
+}
+
+// ============================================
+// WALLET CONFIGURATION
+// ============================================
 // ⚠️ WARNING: This file contains sensitive operations with private keys
 // Never commit keypair files or expose private keys in version control
 
@@ -31,13 +75,7 @@ if (fs.existsSync(keypairPath)) {
   payer = Keypair.generate();
 }
 
-export { wallet, payer };
-
-
-// RPC endpoint - Read from environment variable or use fallback
-// Set HELIUS_RPC_URL in your .env file: HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=YOUR_API_KEY
-const defaultRpc = "https://mainnet.helius-rpc.com/?api-key=abc6870c-9384-4fcd-9eb1-f8865d035b43";
-export const rpc = process.env.HELIUS_RPC_URL || defaultRpc; 
+export { wallet, payer }; 
 
 
 
