@@ -59,7 +59,7 @@ export default function LaunchPage() {
 
   return (
     <MainLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-2">
         <div>
           <h1 className="text-3xl font-bold terminal-text mb-2">Launch Token</h1>
           <p className="text-gray-400">Create and launch your token on Pump.Fun</p>
@@ -81,7 +81,7 @@ export default function LaunchPage() {
                     required
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="My Awesome Token"
                   />
                 </div>
@@ -96,7 +96,7 @@ export default function LaunchPage() {
                     maxLength={10}
                     value={formData.symbol}
                     onChange={(e) => setFormData({ ...formData, symbol: e.target.value.toUpperCase() })}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="MAT"
                   />
                 </div>
@@ -109,7 +109,7 @@ export default function LaunchPage() {
                     required
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     rows={3}
                     placeholder="Describe your token..."
                   />
@@ -126,7 +126,7 @@ export default function LaunchPage() {
                     min="0.001"
                     value={formData.jitoTip}
                     onChange={(e) => setFormData({ ...formData, jitoTip: e.target.value })}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="0.05"
                   />
                   <p className="text-xs text-gray-500 mt-1">Recommended: 0.05 SOL</p>
@@ -147,7 +147,7 @@ export default function LaunchPage() {
                     type="url"
                     value={formData.twitter}
                     onChange={(e) => setFormData({ ...formData, twitter: e.target.value })}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="https://twitter.com/yourproject"
                   />
                 </div>
@@ -160,7 +160,7 @@ export default function LaunchPage() {
                     type="url"
                     value={formData.telegram}
                     onChange={(e) => setFormData({ ...formData, telegram: e.target.value })}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="https://t.me/yourproject"
                   />
                 </div>
@@ -173,7 +173,7 @@ export default function LaunchPage() {
                     type="url"
                     value={formData.website}
                     onChange={(e) => setFormData({ ...formData, website: e.target.value })}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="https://yourproject.com"
                   />
                 </div>

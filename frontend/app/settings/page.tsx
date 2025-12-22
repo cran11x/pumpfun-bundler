@@ -77,7 +77,7 @@ export default function SettingsPage() {
 
   return (
     <MainLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-2">
         <div>
           <h1 className="text-3xl font-bold terminal-text mb-2">Settings</h1>
           <p className="text-gray-400">Configure your bundler settings</p>
@@ -127,7 +127,7 @@ export default function SettingsPage() {
                 <button
                   onClick={() => handleNetworkChange("mainnet")}
                   disabled={networkLoading}
-                  className={`p-4 rounded-lg border-2 transition-all ${
+                  className={`p-5 rounded-lg border-2 transition-all ${
                     network === "mainnet"
                       ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
                       : "border-gray-600 bg-gray-800/50 text-gray-400 hover:border-gray-500"
@@ -141,7 +141,7 @@ export default function SettingsPage() {
                 <button
                   onClick={() => handleNetworkChange("devnet")}
                   disabled={networkLoading}
-                  className={`p-4 rounded-lg border-2 transition-all ${
+                  className={`p-5 rounded-lg border-2 transition-all ${
                     network === "devnet"
                       ? "border-yellow-500 bg-yellow-500/20 text-yellow-400"
                       : "border-gray-600 bg-gray-800/50 text-gray-400 hover:border-gray-500"
@@ -176,7 +176,7 @@ export default function SettingsPage() {
                   type="text"
                   value={config.rpcUrl}
                   onChange={(e) => setConfig({ ...config, rpcUrl: e.target.value })}
-                  className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                  className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                   placeholder="https://mainnet.helius-rpc.com/?api-key=..."
                 />
               </div>
@@ -189,7 +189,7 @@ export default function SettingsPage() {
                   type="text"
                   value={config.jitoUrl}
                   onChange={(e) => setConfig({ ...config, jitoUrl: e.target.value })}
-                  className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                  className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                   placeholder="amsterdam.mainnet.block-engine.jito.wtf"
                 />
               </div>
@@ -247,7 +247,7 @@ export default function SettingsPage() {
                     href="https://faucet.solana.com/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-yellow-500/20 text-yellow-400 rounded-lg hover:bg-yellow-500/30 transition-all"
+                    className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-yellow-500/20 text-yellow-400 rounded-lg hover:bg-yellow-500/30 transition-all"
                   >
                     <ExternalLink className="w-4 h-4" />
                     Solana Faucet
@@ -256,7 +256,7 @@ export default function SettingsPage() {
                     href="https://solfaucet.com/"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-gray-700/50 text-gray-300 rounded-lg hover:bg-gray-700 transition-all"
+                    className="flex items-center justify-center gap-2 w-full px-5 py-3 bg-gray-700/50 text-gray-300 rounded-lg hover:bg-gray-700 transition-all"
                   >
                     <ExternalLink className="w-4 h-4" />
                     SolFaucet (Alternative)

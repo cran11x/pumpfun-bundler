@@ -37,7 +37,7 @@ export default function SellPage() {
 
   return (
     <MainLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-2">
         <div>
           <h1 className="text-3xl font-bold terminal-text mb-2">Sell Tokens</h1>
           <p className="text-gray-400">Sell your tokens on Pump.Fun or Raydium</p>
@@ -83,7 +83,7 @@ export default function SellPage() {
                     required
                     value={marketId}
                     onChange={(e) => setMarketId(e.target.value)}
-                    className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="Enter market ID"
                   />
                 </div>

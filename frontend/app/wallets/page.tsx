@@ -160,7 +160,7 @@ export default function WalletsPage() {
 
   return (
     <MainLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-2">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold terminal-text mb-2">Wallet Management</h1>
@@ -203,7 +203,7 @@ export default function WalletsPage() {
                   </div>
                   <button
                     onClick={() => copyToClipboard(mainWallet.wallet.publicKey)}
-                    className="p-1 hover:bg-[#00ff41]/10 rounded transition-colors"
+                    className="p-2 hover:bg-[#00ff41]/10 rounded transition-colors"
                   >
                     {copied === mainWallet.wallet.publicKey ? (
                       <Check className="w-4 h-4 text-[#00ff41]" />
@@ -241,7 +241,7 @@ export default function WalletsPage() {
                     </div>
                     <button
                       onClick={() => copyToClipboard(mainWallet.payer.publicKey)}
-                      className="p-1 hover:bg-[#00d4ff]/10 rounded transition-colors"
+                      className="p-2 hover:bg-[#00d4ff]/10 rounded transition-colors"
                     >
                       {copied === mainWallet.payer.publicKey ? (
                         <Check className="w-4 h-4 text-[#00d4ff]" />
@@ -336,7 +336,7 @@ export default function WalletsPage() {
                 </CardTitle>
                 <button
                   onClick={() => setShowFundModal(false)}
-                  className="p-1 hover:bg-white/10 rounded transition-colors"
+                  className="p-2 hover:bg-white/10 rounded transition-colors"
                 >
                   <X className="w-5 h-5 text-gray-400" />
                 </button>
@@ -353,7 +353,7 @@ export default function WalletsPage() {
                   min="0"
                   value={fundAmount}
                   onChange={(e) => setFundAmount(e.target.value)}
-                  className="w-full px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                  className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                   placeholder="0.1"
                   autoFocus
                 />

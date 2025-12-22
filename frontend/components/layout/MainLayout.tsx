@@ -16,7 +16,7 @@ export function MainLayout({ children }: { children: ReactNode }) {
         style={{ marginLeft: '224px' }}
       >
         <Header />
-        <main className="flex-1 p-4 md:p-6 w-full overflow-x-hidden">
+        <main className="flex-1 p-6 md:p-8 w-full overflow-x-hidden">
           {children}
         </main>
       </div>

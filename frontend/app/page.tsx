@@ -48,7 +48,7 @@ export default function Dashboard() {
 
   return (
     <MainLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 p-2">
         {/* Page Header */}
         <div className="mb-2">
           <h1 className="text-2xl md:text-3xl font-bold text-white mb-2">

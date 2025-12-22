@@ -26,9 +26,9 @@ export function Button({
           "bg-[#ff0040] text-white hover:bg-[#ff0040]/90 hover:shadow-lg hover:shadow-[#ff0040]/20 active:scale-[0.98]",
         variant === "ghost" &&
           "bg-transparent text-[#00ff41] hover:bg-[#00ff41]/10 border border-[#00ff41]/30 hover:border-[#00ff41]/50 active:scale-[0.98]",
-        size === "sm" && "px-3 py-2 text-sm",
-        size === "md" && "px-4 py-2.5 text-base",
-        size === "lg" && "px-6 py-3 text-lg",
+        size === "sm" && "px-4 py-2.5 text-sm",
+        size === "md" && "px-5 py-3 text-base",
+        size === "lg" && "px-7 py-4 text-lg",
         className
       )}
       {...props}
