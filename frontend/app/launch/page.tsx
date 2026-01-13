@@ -3,8 +3,8 @@
 import { MainLayout } from "@/components/layout/MainLayout";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { useState } from "react";
-import { launchToken } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { generateBuyAmounts, getSolPrice, launchToken } from "@/lib/api";
 import { Rocket, Upload, Loader2 } from "lucide-react";
 
 export default function LaunchPage() {
@@ -20,6 +20,50 @@ export default function LaunchPage() {
   const [image, setImage] = useState<File | null>(null);
   const [launching, setLaunching] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const [buyCurrency, setBuyCurrency] = useState<"eur" | "sol">("eur");
+  const [buyTarget, setBuyTarget] = useState("300");
+  const [buyVariance, setBuyVariance] = useState("30");
+  const [includeDev, setIncludeDev] = useState(false);
+  const [solEur, setSolEur] = useState<number | null>(null);
+  const [generating, setGenerating] = useState(false);
+  const [generated, setGenerated] = useState<Record<string, { solAmount: string; approxEur?: number }>>({});
+
+  useEffect(() => {
+    // Best-effort: fetch SOL/EUR price for nicer UX
+    (async () => {
+      try {
+        const r = await getSolPrice("eur");
+        const p = r?.solana?.eur;
+        if (typeof p === "number" && Number.isFinite(p) && p > 0) setSolEur(p);
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const target = Number(buyTarget);
+      const variance = Number(buyVariance);
+      if (!Number.isFinite(target) || target <= 0) throw new Error("Invalid target");
+      if (!Number.isFinite(variance) || variance < 0) throw new Error("Invalid variance");
+
+      const resp = await generateBuyAmounts({
+        currency: buyCurrency,
+        target,
+        variance,
+        includeDev,
+        solEur: buyCurrency === "eur" && solEur ? solEur : undefined,
+      });
+      setGenerated(resp.generated || {});
+      alert(`✅ Generated buy amounts for ${resp.walletsCount} wallet(s). Saved into keyInfo.json.`);
+    } catch (e: any) {
+      alert(`Failed to generate: ${e?.message ?? String(e)}`);
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -216,6 +260,101 @@ export default function LaunchPage() {
                     )}
                   </div>
                 </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Buy Amounts (per wallet)</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-gray-400">
+                  Generate different buy amounts per wallet (saved into <code className="text-gray-300">keyInfo.json</code>). Launch will use these exact numbers.
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">Currency</label>
+                    <select
+                      value={buyCurrency}
+                      onChange={(e) => setBuyCurrency(e.target.value as "eur" | "sol")}
+                      className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    >
+                      <option value="eur">EUR</option>
+                      <option value="sol">SOL</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Target per wallet ({buyCurrency.toUpperCase()})
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={buyTarget}
+                      onChange={(e) => setBuyTarget(e.target.value)}
+                      className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                      placeholder="300"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Variance (± {buyCurrency.toUpperCase()})
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={buyVariance}
+                      onChange={(e) => setBuyVariance(e.target.value)}
+                      className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                      placeholder="30"
+                    />
+                  </div>
+                </div>
+
+                {buyCurrency === "eur" && solEur && (
+                  <p className="text-xs text-gray-500">
+                    Using SOL/EUR ≈ <span className="text-gray-300">{solEur}</span> (best-effort).
+                  </p>
+                )}
+
+                <label className="flex items-center gap-2 text-sm text-gray-300">
+                  <input
+                    type="checkbox"
+                    checked={includeDev}
+                    onChange={(e) => setIncludeDev(e.target.checked)}
+                  />
+                  Include dev wallet too
+                </label>
+
+                <Button type="button" variant="secondary" onClick={handleGenerate} disabled={generating}>
+                  {generating ? "Generating..." : "Generate & Save"}
+                </Button>
+
+                {Object.keys(generated).length > 0 && (
+                  <div className="mt-2 text-sm text-gray-300">
+                    <div className="text-xs text-gray-500 mb-2">Generated:</div>
+                    <div className="space-y-1">
+                      {Object.entries(generated).slice(0, 12).map(([pk, v]) => (
+                        <div key={pk} className="flex justify-between gap-3">
+                          <span className="text-gray-400">{pk.slice(0, 6)}…{pk.slice(-6)}</span>
+                          <span>
+                            {v.solAmount} SOL{v.approxEur != null ? ` (~${v.approxEur.toFixed(2)} EUR)` : ""}
+                          </span>
+                        </div>
+                      ))}
+                      {Object.keys(generated).length > 12 && (
+                        <div className="text-xs text-gray-500">…and {Object.keys(generated).length - 12} more</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>

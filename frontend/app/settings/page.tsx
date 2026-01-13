@@ -4,7 +4,7 @@ import { MainLayout } from "@/components/layout/MainLayout";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { useState, useEffect } from "react";
-import { getConfig, updateConfig, createLUT, extendLUT } from "@/lib/api";
+import { getConfig, updateConfig, createLUT, extendLUT, createMainWallet } from "@/lib/api";
 import { useNetworkStore } from "@/lib/store";
 import { Settings, Save, RefreshCw, Globe, FlaskConical, AlertTriangle, ExternalLink } from "lucide-react";
 
@@ -15,6 +15,7 @@ export default function SettingsPage() {
   });
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [creatingMainWallet, setCreatingMainWallet] = useState(false);
   const { network, isDevnet, fetchNetwork, setNetwork, loading: networkLoading } = useNetworkStore();
 
   useEffect(() => {
@@ -72,6 +73,23 @@ export default function SettingsPage() {
     } catch (error: any) {
       alert(`Failed to extend LUT: ${error.message || error.toString()}`);
       console.error("LUT extension error:", error);
+    }
+  };
+
+  const handleCreateMainWallet = async () => {
+    if (!confirm("⚠️ WARNING: This will create a NEW main wallet and the old one will be lost!\n\nMake sure you have backed up your current wallet if it has funds.\n\nContinue?")) {
+      return;
+    }
+    
+    setCreatingMainWallet(true);
+    try {
+      const result = await createMainWallet();
+      alert(`✅ New main wallet created!\n\nPublic Key: ${result.publicKey}\n\n⚠️ IMPORTANT: Server restart required for changes to take effect!`);
+    } catch (error: any) {
+      alert(`Failed to create main wallet: ${error.message || error.toString()}`);
+      console.error("Main wallet creation error:", error);
+    } finally {
+      setCreatingMainWallet(false);
     }
   };
 
@@ -202,6 +220,32 @@ export default function SettingsPage() {
                 <Button type="button" variant="ghost" onClick={loadConfig} disabled={loading}>
                   <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
                   Refresh
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Main Wallet Management</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-gray-400">
+                The main wallet is used for token creation and funding. It is preserved when creating sub-wallets.
+              </p>
+              <p className="text-xs text-yellow-400">
+                ⚠️ Creating a new main wallet will replace the current one. Make sure to backup your current wallet if it has funds!
+              </p>
+
+              <div className="space-y-2">
+                <Button 
+                  type="button" 
+                  variant="secondary" 
+                  className="w-full" 
+                  onClick={handleCreateMainWallet}
+                  disabled={creatingMainWallet}
+                >
+                  {creatingMainWallet ? "Creating..." : "Create New Main Wallet"}
                 </Button>
               </div>
             </CardContent>

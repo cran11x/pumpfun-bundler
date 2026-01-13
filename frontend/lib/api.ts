@@ -31,6 +31,9 @@ api.interceptors.response.use(
   },
   (error) => {
     console.error(`[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} - Error:`, error.message);
+    if (error.response?.data) {
+        console.error("[API] Response Data:", error.response.data);
+    }
     if (error.code === 'ERR_NETWORK') {
       console.error("[API] Network error - is the API server running on http://localhost:3001?");
     }
@@ -75,18 +78,26 @@ export const getWallets = async () => {
 };
 
 export const createWallets = async (count: number) => {
-  try {
-    const response = await api.post("/wallets/create", { count });
-    if (response.data.error) {
-      throw new Error(response.data.error);
+  return retryApiCall(async () => {
+    try {
+      const response = await api.post("/wallets/create", { count });
+      if (response.data.error) {
+        throw new Error(response.data.error);
+      }
+      if (!response.data.success) {
+        throw new Error(response.data.message || "Failed to create wallets");
+      }
+      return response.data;
+    } catch (error: any) {
+      if (error.response?.data?.error) {
+        throw new Error(error.response.data.error);
+      }
+      if (error.response?.data?.message) {
+        throw new Error(error.response.data.message);
+      }
+      throw error;
     }
-    return response.data;
-  } catch (error: any) {
-    if (error.response?.data?.error) {
-      throw new Error(error.response.data.error);
-    }
-    throw error;
-  }
+  }, 3, 1000);
 };
 
 export const fundWallets = async (amountPerWallet?: number) => {
@@ -110,6 +121,25 @@ export const fundWallets = async (amountPerWallet?: number) => {
   }
 };
 
+export const reclaimWallets = async (jitoTip?: number) => {
+  try {
+    const body: any = {};
+    if (jitoTip !== undefined) {
+      body.jitoTip = jitoTip;
+    }
+    const response = await api.post("/wallets/reclaim", body);
+    return response.data;
+  } catch (error: any) {
+    if (error.response?.data?.error) {
+      throw new Error(error.response.data.error);
+    }
+    if (error.message) {
+      throw new Error(error.message);
+    }
+    throw new Error("Failed to reclaim SOL. Please try again.");
+  }
+};
+
 export const getBalances = async () => {
   return retryApiCall(async () => {
     const response = await api.get("/wallets/balances");
@@ -117,11 +147,72 @@ export const getBalances = async () => {
   });
 };
 
+export const getSolPrice = async (vs: "eur" | "usd" = "eur") => {
+  const response = await api.get("/prices/sol", { params: { vs } });
+  return response.data as {
+    success: boolean;
+    solana: Record<string, number>;
+    cached?: boolean;
+    warning?: string;
+    error?: string;
+  };
+};
+
+export const generateBuyAmounts = async (data: {
+  currency: "eur" | "sol";
+  target: number;
+  variance: number;
+  includeDev?: boolean;
+  walletPubkeys?: string[];
+  solEur?: number;
+}) => {
+  const response = await api.post("/wallets/buy-amounts/generate", data);
+  return response.data as {
+    success: boolean;
+    currency: "eur" | "sol";
+    eurPerSol: number | null;
+    walletsCount: number;
+    generated: Record<string, { solAmount: string; approxEur?: number }>;
+  };
+};
+
+export const getMintBalances = async (mint: string) => {
+  const response = await api.get("/tokens/balances", { params: { mint } });
+  return response.data as {
+    success: boolean;
+    mint: string;
+    balances: Array<{
+      owner: string;
+      ownerPubkey: string;
+      mint: string;
+      amount: string;
+      decimals: number;
+      uiAmount: number;
+      error?: string;
+    }>;
+  };
+};
+
 export const getMainWallet = async () => {
   return retryApiCall(async () => {
     const response = await api.get("/wallets/main");
     return response.data;
   });
+};
+
+export const createMainWallet = async () => {
+  try {
+    const response = await api.post("/wallets/main/create");
+    if (response.data.error) {
+      throw new Error(response.data.error);
+    }
+    return response.data;
+  } catch (error: any) {
+    if (error.response?.data?.error) {
+      throw new Error(error.response.data.error);
+    }
+    throw error;
+  }
 };
 
 // Launch
@@ -165,7 +256,14 @@ export const simulateLaunch = async (data: {
 // Sell
 export const sellPumpFun = async (data: {
   percentage: number;
+  mint?: string;
+  mode?: "quick" | "consolidated" | "per-wallet";
+  wallet?: string;
   wallets?: string[];
+  walletPercentages?: Record<string, number>;
+  autoFundWallets?: boolean;
+  jitoTip?: number;
+  dryRun?: boolean;
 }) => {
   const response = await api.post("/sell/pumpfun", data);
   return response.data;

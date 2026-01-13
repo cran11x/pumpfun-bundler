@@ -20,7 +20,7 @@ export function handleBundleError(error: any): ErrorAnalysis {
 	const errMsg = error?.message || String(error);
 
 	// Kategorizacija grešaka
-	if (errMsg.includes("Bundle Dropped")) {
+	if (errMsg.includes("Bundle Dropped") || errMsg.includes("Bundle likely dropped")) {
 		return {
 			message: "Bundle je odbačen - nema dostupnih leader-a",
 			recoverable: true,

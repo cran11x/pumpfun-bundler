@@ -14,10 +14,21 @@ const AUTH_KEYPAIR_PATH = config.get('auth_keypair_path');
 const GEYSER_URL = config.get('geyser_url');
 const GEYSER_ACCESS_TOKEN = config.get('geyser_access_token');
 
-const decodedKey = new Uint8Array(
-  JSON.parse(fs.readFileSync(AUTH_KEYPAIR_PATH).toString()) as number[],
-);
-const keypair = Keypair.fromSecretKey(decodedKey);
+let keypair: Keypair;
+try {
+  if (!fs.existsSync(AUTH_KEYPAIR_PATH)) {
+    console.error(`⚠️  Jito Auth Keypair not found at ${AUTH_KEYPAIR_PATH}. Jito functionality will fail on Mainnet.`);
+    throw new Error(`Jito Auth Keypair not found at ${AUTH_KEYPAIR_PATH}`);
+  }
+  const decodedKey = new Uint8Array(
+    JSON.parse(fs.readFileSync(AUTH_KEYPAIR_PATH).toString()) as number[],
+  );
+  keypair = Keypair.fromSecretKey(decodedKey);
+} catch (error: any) {
+  console.error(`❌ Failed to load Jito Auth Keypair: ${error.message}`);
+  // Use a random keypair so the app doesn't crash on import, but Jito auth will fail later
+  keypair = Keypair.generate();
+}
 
 export const privateKey = keypair
 

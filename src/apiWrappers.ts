@@ -7,6 +7,7 @@ import axios from "axios";
 import { connection, wallet, payer, rpc } from "../config";
 import { loadKeypairs } from "./createKeys";
 import { sendBundle as sendBundleUtil } from "./utils/bundleSender";
+import { simulateBundle } from "./utils/bundleSender";
 import * as spl from "@solana/spl-token";
 import bs58 from "bs58";
 import { getRandomTipAccount } from "./clients/config";
@@ -15,6 +16,14 @@ import { PUMP_PROGRAM, global, feeRecipient, eventAuthority, MPL_TOKEN_METADATA_
 import { SystemProgram, VersionedTransaction, TransactionMessage, TransactionInstruction, PublicKey, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
 
 const keyInfoPath = path.join(__dirname, "keyInfo.json");
+
+// Fee program constant from Pump.fun IDL
+const FEE_PROGRAM = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
+// Fee config seed bytes from Pump.fun IDL
+const FEE_CONFIG_SEED_BYTES = Buffer.from([
+  1, 86, 224, 246, 147, 102, 90, 207, 68, 219, 21, 104, 191, 23, 91, 170, 81,
+  137, 203, 151, 245, 210, 255, 59, 101, 93, 43, 182, 253, 109, 24, 176,
+]);
 
 // Wrapper for buyBundle with parameters
 export async function buyBundleWithParams(params: {
@@ -26,6 +35,7 @@ export async function buyBundleWithParams(params: {
   website?: string;
   jitoTip: number;
   imagePath: string;
+  dryRun?: boolean;
 }) {
   const { buyBundleWithParams: buyBundle } = await import("./jitoPool");
   return buyBundle({
@@ -36,17 +46,29 @@ export async function buyBundleWithParams(params: {
     telegram: params.telegram,
     website: params.website,
     jitoTip: params.jitoTip,
-  }, params.imagePath);
+  }, params.imagePath, { dryRun: params.dryRun });
 }
 
 // Wrapper for sellXPercentagePF with parameters
-export async function sellPumpFunWithParams(percentage: number, jitoTip: number = 0.01) {
+export async function sellPumpFunWithParams(
+  percentage: number,
+  jitoTip: number = 0.01,
+  options?: {
+    dryRun?: boolean;
+    mint?: string;
+    mode?: "quick" | "consolidated" | "per-wallet";
+    wallet?: string;
+    wallets?: string[];
+    walletPercentages?: Record<string, number>;
+    autoFundWallets?: boolean;
+  }
+) {
   const provider = new anchor.AnchorProvider(new anchor.web3.Connection(rpc), new anchor.Wallet(wallet), { commitment: "confirmed" });
   const IDL_PumpFun = JSON.parse(fs.readFileSync("./pumpfun-IDL.json", "utf-8")) as anchor.Idl;
   const pfprogram = new anchor.Program(IDL_PumpFun, provider);
   
-  const bundledTxns = [];
-  const keypairs = loadKeypairs();
+  const bundledTxns: VersionedTransaction[] = [];
+  const subWalletKeypairs = loadKeypairs();
   
   let poolInfo: { [key: string]: any } = {};
   if (fs.existsSync(keyInfoPath)) {
@@ -54,9 +76,14 @@ export async function sellPumpFunWithParams(percentage: number, jitoTip: number 
     poolInfo = JSON.parse(data);
   }
   
-  if (!poolInfo.addressLUT || !poolInfo.mint) {
-    throw new Error("LUT and mint must be set before selling");
+  if (!poolInfo.addressLUT) {
+    throw new Error("LUT must be set before selling");
   }
+
+  if (!options?.mint && !poolInfo.mint) {
+    throw new Error("Mint is required (either pass mint param or set keyInfo.json mint)");
+  }
+  const mintPubkey = new PublicKey(options?.mint ?? poolInfo.mint);
   
   const lut = new PublicKey(poolInfo.addressLUT.toString());
   const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
@@ -65,103 +92,353 @@ export async function sellPumpFunWithParams(percentage: number, jitoTip: number 
     throw new Error("Lookup table account not found!");
   }
   
-  const mintKp = Keypair.fromSecretKey(Uint8Array.from(bs58.decode(poolInfo.mintPk)));
-  const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mintKp.publicKey.toBytes()], pfprogram.programId);
-  
-  const supplyPercent = percentage / 100;
-  const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
-  
-  const mintInfo = await connection.getTokenSupply(mintKp.publicKey);
-  let sellTotalAmount = 0;
-  
-  const chunkedKeypairs = [];
-  for (let i = 0; i < keypairs.length; i += 6) {
-    chunkedKeypairs.push(keypairs.slice(i, i + 6));
+  const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mintPubkey.toBytes()], pfprogram.programId);
+  const [associatedBondingCurve] = PublicKey.findProgramAddressSync(
+    [bondingCurve.toBytes(), spl.TOKEN_PROGRAM_ID.toBytes(), mintPubkey.toBytes()],
+    spl.ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+
+  // Resolve creator for this bonding curve (needed for creatorVault PDA) so we can sell any mint, not just tokens created by our dev wallet.
+  let bondingCurveCreator: PublicKey = wallet.publicKey;
+  try {
+    // Anchor account namespace is camelCase: bondingCurve (struct name: BondingCurve)
+    const bc: any = await (pfprogram as any).account.bondingCurve.fetch(bondingCurve);
+    if (bc?.creator) bondingCurveCreator = bc.creator as PublicKey;
+  } catch {
+    // fallback: keep dev wallet as creator (works for tokens created by this dev wallet)
   }
+  const [creatorVault] = PublicKey.findProgramAddressSync(
+    [Buffer.from("creator-vault"), bondingCurveCreator.toBuffer()],
+    PUMP_PROGRAM
+  );
   
-  const PayerTokenATA = await spl.getAssociatedTokenAddress(new PublicKey(poolInfo.mint), payer.publicKey);
-  const { blockhash } = await connection.getLatestBlockhash();
+  const mode: "quick" | "consolidated" | "per-wallet" = options?.mode ?? "consolidated";
+
+  const supplyPercentDefault = percentage / 100;
+  // Jito bundles typically require a minimum tip transfer. Clamp to >= 1000 lamports.
+  const requestedTipLamports = Math.floor(jitoTip * LAMPORTS_PER_SOL);
+  const jitoTipLamports = Math.max(1000, requestedTipLamports);
   
-  for (let chunkIndex = 0; chunkIndex < chunkedKeypairs.length; chunkIndex++) {
-    const chunk = chunkedKeypairs[chunkIndex];
-    const instructionsForChunk = [];
-    const isFirstChunk = chunkIndex === 0;
-    
-    if (isFirstChunk) {
-      const transferAmount = await getSellBalance(wallet, new PublicKey(poolInfo.mint), supplyPercent);
-      sellTotalAmount += transferAmount;
-      
-      const ataIx = spl.createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, PayerTokenATA, payer.publicKey, new PublicKey(poolInfo.mint));
-      const TokenATA = await spl.getAssociatedTokenAddress(new PublicKey(poolInfo.mint), wallet.publicKey);
-      const transferIx = spl.createTransferInstruction(TokenATA, PayerTokenATA, wallet.publicKey, transferAmount);
-      instructionsForChunk.push(ataIx, transferIx);
+  const mintInfo = await connection.getTokenSupply(mintPubkey);
+
+  // Build a pubkey->keypair map that includes dev wallet and all sub-wallets
+  const keypairByPubkey = new Map<string, Keypair>();
+  keypairByPubkey.set(wallet.publicKey.toString(), wallet);
+  for (const kp of subWalletKeypairs) keypairByPubkey.set(kp.publicKey.toString(), kp);
+
+  const resolveWalletKeypairs = (pubkeys?: string[]): Keypair[] => {
+    if (!pubkeys || pubkeys.length === 0) {
+      // Default: dev wallet + all sub-wallets
+      return [wallet, ...subWalletKeypairs];
     }
-    
-    for (let keypair of chunk) {
-      const transferAmount = await getSellBalance(keypair, new PublicKey(poolInfo.mint), supplyPercent);
-      sellTotalAmount += transferAmount;
-      const TokenATA = await spl.getAssociatedTokenAddress(new PublicKey(poolInfo.mint), keypair.publicKey);
-      const transferIx = spl.createTransferInstruction(TokenATA, PayerTokenATA, keypair.publicKey, transferAmount);
-      instructionsForChunk.push(transferIx);
+    const res: Keypair[] = [];
+    for (const pk of pubkeys) {
+      const kp = keypairByPubkey.get(pk);
+      if (!kp) throw new Error(`Unknown wallet pubkey: ${pk} (not found in dev wallet or keypairs dir)`);
+      res.push(kp);
     }
-    
-    if (instructionsForChunk.length > 0) {
-      const message = new TransactionMessage({
-        payerKey: payer.publicKey,
-        recentBlockhash: blockhash,
-        instructions: instructionsForChunk,
-      }).compileToV0Message([lookupTableAccount]);
-      
-      const versionedTx = new VersionedTransaction(message);
-      versionedTx.sign([payer]);
-      for (let keypair of chunk) {
-        versionedTx.sign([keypair]);
+    // Deduplicate by pubkey
+    const seen = new Set<string>();
+    return res.filter((kp) => {
+      const s = kp.publicKey.toString();
+      if (seen.has(s)) return false;
+      seen.add(s);
+      return true;
+    });
+  };
+
+  const pctForWallet = (kp: Keypair): number => {
+    const m = options?.walletPercentages;
+    const pct = m?.[kp.publicKey.toString()];
+    const value = typeof pct === "number" && Number.isFinite(pct) ? pct : percentage;
+    if (!Number.isFinite(value) || value < 0 || value > 100) {
+      throw new Error(`Invalid percentage for wallet ${kp.publicKey.toString()}: ${value}`);
+    }
+    return value;
+  };
+
+  const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync(
+    [Buffer.from("global_volume_accumulator")],
+    PUMP_PROGRAM
+  );
+  const [feeConfig] = PublicKey.findProgramAddressSync(
+    [Buffer.from("fee_config"), FEE_CONFIG_SEED_BYTES],
+    FEE_PROGRAM
+  );
+
+  // Helper to build a sell instruction for a given user + ATA + amount
+  const buildSellIx = async (params: { user: PublicKey; associatedUser: PublicKey; amount: BN }) => {
+    const [userVolumeAccumulator] = PublicKey.findProgramAddressSync(
+      [Buffer.from("user_volume_accumulator"), params.user.toBuffer()],
+      PUMP_PROGRAM
+    );
+
+    return await pfprogram.methods
+      .sell(params.amount, new BN(0))
+      .accounts({
+        global,
+        feeRecipient,
+        mint: mintPubkey,
+        bondingCurve,
+        associatedBondingCurve,
+        associatedUser: params.associatedUser,
+        user: params.user,
+        systemProgram: SystemProgram.programId,
+        tokenProgram: spl.TOKEN_PROGRAM_ID,
+        creatorVault,
+        rent: SYSVAR_RENT_PUBKEY,
+        eventAuthority,
+        program: PUMP_PROGRAM,
+        globalVolumeAccumulator,
+        userVolumeAccumulator,
+        feeConfig,
+        feeProgram: FEE_PROGRAM,
+      })
+      .instruction();
+  };
+
+  const ensureWalletsHaveSolForFees = async (walletsToFund: Keypair[]) => {
+    // Only used for per-wallet / quick when wallets need SOL for fee payer + tip.
+    // We keep this NON-atomic (RPC sends) to avoid simulation false negatives from dependent balances.
+    const minTargetLamports = Math.floor(0.005 * LAMPORTS_PER_SOL) + jitoTipLamports + 10_000; // fee buffer
+    const needFunding: { kp: Keypair; lamports: number }[] = [];
+
+    for (const kp of walletsToFund) {
+      // skip if kp is payer itself
+      if (kp.publicKey.toString() === payer.publicKey.toString()) continue;
+      const bal = await connection.getBalance(kp.publicKey);
+      if (bal < minTargetLamports) {
+        needFunding.push({ kp, lamports: minTargetLamports - bal });
       }
-      bundledTxns.push(versionedTx);
     }
+
+    if (needFunding.length === 0) return;
+
+    const { blockhash } = await connection.getLatestBlockhash();
+    const ixs: TransactionInstruction[] = needFunding.map((w) =>
+      SystemProgram.transfer({
+        fromPubkey: payer.publicKey,
+        toPubkey: w.kp.publicKey,
+        lamports: w.lamports,
+      })
+    );
+
+    const msg = new TransactionMessage({
+      payerKey: payer.publicKey,
+      recentBlockhash: blockhash,
+      instructions: ixs,
+    }).compileToV0Message([lookupTableAccount]);
+
+    const tx = new VersionedTransaction(msg);
+    tx.sign([payer]);
+
+    const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false, maxRetries: 3 });
+    await connection.confirmTransaction(sig, "confirmed");
+  };
+
+  // QUICK MODE: one wallet sells its own tokens (wallet is trader)
+  if (mode === "quick") {
+    if (!options?.wallet) throw new Error("Quick sell requires `wallet` pubkey");
+    const kp = resolveWalletKeypairs([options.wallet])[0];
+
+    if (options?.autoFundWallets) {
+      await ensureWalletsHaveSolForFees([kp]);
+    }
+
+    const pct = pctForWallet(kp);
+    const sellAmount = await getSellBalance(kp, mintPubkey, pct / 100);
+    if (sellAmount <= 0) throw new Error(`No tokens to sell for wallet ${kp.publicKey.toString()}`);
+
+    const walletATA = await spl.getAssociatedTokenAddress(mintPubkey, kp.publicKey);
+    const ataIx = spl.createAssociatedTokenAccountIdempotentInstruction(
+      kp.publicKey,
+      walletATA,
+      kp.publicKey,
+      mintPubkey
+    );
+
+    const sellIx = await buildSellIx({ user: kp.publicKey, associatedUser: walletATA, amount: new BN(sellAmount) });
+    const tipIx = SystemProgram.transfer({
+      fromPubkey: kp.publicKey,
+      toPubkey: getRandomTipAccount(),
+      lamports: BigInt(jitoTipLamports),
+    });
+
+    const { blockhash } = await connection.getLatestBlockhash();
+    const msg = new TransactionMessage({
+      payerKey: kp.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [ataIx, sellIx, tipIx],
+    }).compileToV0Message([lookupTableAccount]);
+
+    const tx = new VersionedTransaction(msg);
+    tx.sign([kp]);
+    bundledTxns.push(tx);
+
+    if (options?.dryRun) {
+      const simulationPassed = await simulateBundle(bundledTxns);
+      return { success: simulationPassed, dryRun: true, simulationPassed, amount: sellAmount };
+    }
+
+    await sendBundleUtil(bundledTxns);
+    return { success: true, amount: sellAmount };
+  }
+
+  // PER-WALLET MODE: each wallet sells independently (each wallet is trader)
+  if (mode === "per-wallet") {
+    const walletsToSell = resolveWalletKeypairs(options?.wallets);
+
+    if (options?.autoFundWallets) {
+      await ensureWalletsHaveSolForFees(walletsToSell);
+    }
+
+    let total = 0;
+    for (const kp of walletsToSell) {
+      const pct = pctForWallet(kp);
+      if (pct <= 0) continue;
+      const sellAmount = await getSellBalance(kp, mintPubkey, pct / 100);
+      if (sellAmount <= 0) continue;
+      total += sellAmount;
+
+      const walletATA = await spl.getAssociatedTokenAddress(mintPubkey, kp.publicKey);
+      const ataIx = spl.createAssociatedTokenAccountIdempotentInstruction(
+        kp.publicKey,
+        walletATA,
+        kp.publicKey,
+        mintPubkey
+      );
+
+      const sellIx = await buildSellIx({ user: kp.publicKey, associatedUser: walletATA, amount: new BN(sellAmount) });
+      const tipIx = SystemProgram.transfer({
+        fromPubkey: kp.publicKey,
+        toPubkey: getRandomTipAccount(),
+        lamports: BigInt(jitoTipLamports),
+      });
+
+      const { blockhash } = await connection.getLatestBlockhash();
+      const msg = new TransactionMessage({
+        payerKey: kp.publicKey,
+        recentBlockhash: blockhash,
+        instructions: [ataIx, sellIx, tipIx],
+      }).compileToV0Message([lookupTableAccount]);
+
+      const tx = new VersionedTransaction(msg);
+      tx.sign([kp]);
+      bundledTxns.push(tx);
+    }
+
+    if (total <= 0) throw new Error("No tokens found to sell for selected wallets");
+
+    if (options?.dryRun) {
+      const simulationPassed = await simulateBundle(bundledTxns);
+      return { success: simulationPassed, dryRun: true, simulationPassed, amount: total };
+    }
+
+    await sendBundleUtil(bundledTxns);
+    return { success: true, amount: total };
+  }
+
+  // CONSOLIDATED MODE (default): collect into payer ATA, then one sell (payer is trader)
+  let sellTotalAmount = 0;
+
+  const walletsToSell = resolveWalletKeypairs(options?.wallets);
+  const PayerTokenATA = await spl.getAssociatedTokenAddress(mintPubkey, payer.publicKey);
+  const { blockhash } = await connection.getLatestBlockhash();
+
+  // Transfer instructions (chunked to keep tx size/signers reasonable)
+  const transferWallets = walletsToSell.filter((kp) => pctForWallet(kp) > 0);
+  const chunks: Keypair[][] = [];
+  for (let i = 0; i < transferWallets.length; i += 6) chunks.push(transferWallets.slice(i, i + 6));
+
+  for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+    const chunk = chunks[chunkIndex];
+    const instructionsForChunk: TransactionInstruction[] = [];
+    const isFirstChunk = chunkIndex === 0;
+
+    // Ensure payer's ATA exists before consolidating (only once)
+    if (isFirstChunk) {
+      instructionsForChunk.push(
+        spl.createAssociatedTokenAccountIdempotentInstruction(
+          payer.publicKey,
+          PayerTokenATA,
+          payer.publicKey,
+          mintPubkey
+        )
+      );
+    }
+
+    const signers: Keypair[] = [payer];
+
+    for (const kp of chunk) {
+      const pct = pctForWallet(kp);
+      const transferAmount = await getSellBalance(kp, mintPubkey, pct / 100);
+      if (transferAmount <= 0) continue;
+      sellTotalAmount += transferAmount;
+
+      const tokenATA = await spl.getAssociatedTokenAddress(mintPubkey, kp.publicKey);
+      // If the wallet is payer itself, no transfer needed; tokens already in payer ATA.
+      if (kp.publicKey.toString() === payer.publicKey.toString()) continue;
+
+      instructionsForChunk.push(
+        spl.createTransferInstruction(tokenATA, PayerTokenATA, kp.publicKey, transferAmount)
+      );
+      signers.push(kp);
+    }
+
+    if (instructionsForChunk.length === 0) continue;
+
+    const msg = new TransactionMessage({
+      payerKey: payer.publicKey,
+      recentBlockhash: blockhash,
+      instructions: instructionsForChunk,
+    }).compileToV0Message([lookupTableAccount]);
+
+    const tx = new VersionedTransaction(msg);
+    tx.sign(signers);
+    bundledTxns.push(tx);
+  }
+
+  if (sellTotalAmount <= 0) {
+    throw new Error("No tokens found to sell (sellTotalAmount=0). Ensure your wallets actually hold the token.");
   }
   
   if (+mintInfo.value.amount * 0.25 <= sellTotalAmount) {
     throw new Error("Cannot sell more than 25% of supply at a time");
   }
   
-  const payerNum = Math.floor(Math.random() * keypairs.length);
-  const payerKey = keypairs[payerNum];
+  // Sell tx should use the main payer as fee payer to avoid requiring SOL on a random sub-wallet.
+  const feePayerKeypair = payer;
   
-  const sellIx = await pfprogram.methods
-    .sell(new BN(sellTotalAmount), new BN(0))
-    .accounts({
-      global,
-      feeRecipient,
-      mint: new PublicKey(poolInfo.mint),
-      bondingCurve,
-      user: payer.publicKey,
-      systemProgram: SystemProgram.programId,
-      associatedTokenProgram: spl.ASSOCIATED_TOKEN_PROGRAM_ID,
-      tokenProgram: spl.TOKEN_PROGRAM_ID,
-      program: PUMP_PROGRAM,
-    })
-    .instruction();
+  const sellIx = await buildSellIx({
+    user: payer.publicKey,
+    associatedUser: PayerTokenATA,
+    amount: new BN(sellTotalAmount),
+  });
   
   const sellPayerIxs = [
     sellIx,
     SystemProgram.transfer({
       fromPubkey: payer.publicKey,
       toPubkey: getRandomTipAccount(),
-      lamports: BigInt(jitoTipAmt),
+      lamports: BigInt(jitoTipLamports),
     })
   ];
   
   const sellMessage = new TransactionMessage({
-    payerKey: payerKey.publicKey,
+    payerKey: feePayerKeypair.publicKey,
     recentBlockhash: blockhash,
     instructions: sellPayerIxs,
   }).compileToV0Message([lookupTableAccount]);
   
   const sellTx = new VersionedTransaction(sellMessage);
-  sellTx.sign([payer, payerKey]);
+  sellTx.sign([payer]);
   bundledTxns.push(sellTx);
   
+  if (options?.dryRun) {
+    const simulationPassed = await simulateBundle(bundledTxns);
+    return { success: simulationPassed, dryRun: true, simulationPassed, amount: sellTotalAmount };
+  }
+
   await sendBundleUtil(bundledTxns);
   return { success: true, amount: sellTotalAmount };
 }
@@ -396,5 +673,21 @@ export async function fundWalletsWithParams(jitoTip: number = 0.01) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error(`[fundWalletsWithParams] Error:`, errorMsg);
     throw error; // Re-throw to allow API endpoint to handle
+  }
+}
+
+// Wrapper for reclaiming SOL from sub-wallets back to payer/main wallet
+export async function reclaimWalletsWithParams(jitoTip: number = 0) {
+  try {
+    if (jitoTip < 0 || isNaN(jitoTip)) {
+      throw new Error(`Invalid jitoTip parameter: ${jitoTip}. Must be a non-negative number.`);
+    }
+
+    const { reclaimSOLToPayer } = await import("./senderUI");
+    return await reclaimSOLToPayer(jitoTip);
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
+    console.error(`[reclaimWalletsWithParams] Error:`, errorMsg);
+    throw error;
   }
 }

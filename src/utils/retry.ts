@@ -1,4 +1,5 @@
 import { Logger } from "./logger";
+import { BundlerError } from "./errorHandler";
 
 export async function retryOperation<T>(
 	operation: () => Promise<T>,
@@ -13,6 +14,16 @@ export async function retryOperation<T>(
 			return await operation();
 		} catch (error) {
 			lastError = error;
+
+			// If the error is explicitly non-retryable, fail fast.
+			if (error instanceof BundlerError && error.recoverable === false) {
+				Logger.error(`${operationName} - Non-retryable error`, {
+					code: error.code,
+					message: error.message,
+				});
+				throw error;
+			}
+
 			if (i < maxRetries - 1) {
 				Logger.warn(
 					`${operationName} - Pokušaj ${i + 1}/${maxRetries} neuspešan, ponovo za ${delay}ms...`

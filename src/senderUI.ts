@@ -1,6 +1,6 @@
 import { Keypair, PublicKey, SystemProgram, TransactionInstruction, VersionedTransaction, LAMPORTS_PER_SOL, TransactionMessage, Blockhash } from "@solana/web3.js";
 import { loadKeypairs } from "./createKeys";
-import { wallet, connection, payer } from "../config";
+import { wallet, payer, getConnection } from "../config";
 import * as spl from "@solana/spl-token";
 import { sendBundle as sendBundleUtil } from "./utils/bundleSender";
 import { MenuUI } from "./ui/menu";
@@ -131,16 +131,26 @@ async function createAndSignVersionedTxWithKeypairs(instructionsChunk: Transacti
 		poolInfo = JSON.parse(data);
 	}
 
-	if (!poolInfo.addressLUT) {
-		throw new Error("Lookup Table (LUT) address not found in keyInfo.json. Please create a LUT first.");
-	}
-
-	const lut = new PublicKey(poolInfo.addressLUT.toString());
-
-	const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
-
-	if (lookupTableAccount == null) {
-		throw new Error(`Lookup table account not found at address: ${lut.toString()}. Please verify the LUT address is correct.`);
+	// Funding SOL transfers does NOT require a LUT.
+	// If a LUT exists we can use it, but on devnet it's common for the LUT to be missing/invalid.
+	// In that case we fall back to compiling without LUT.
+	const lookupTableAccounts: any[] = [];
+	if (poolInfo.addressLUT) {
+		try {
+			const lut = new PublicKey(poolInfo.addressLUT.toString());
+			const lookupTableAccount = (await getConnection().getAddressLookupTable(lut)).value;
+			if (lookupTableAccount) {
+				lookupTableAccounts.push(lookupTableAccount);
+			} else {
+				console.warn(
+					`[Funding] LUT not found at ${lut.toString()} - proceeding without LUT for SOL transfers.`
+				);
+			}
+		} catch (e) {
+			console.warn(
+				`[Funding] Failed to load LUT (${poolInfo.addressLUT}) - proceeding without LUT for SOL transfers.`
+			);
+		}
 	}
 
 	const addressesMain: PublicKey[] = [];
@@ -154,7 +164,7 @@ async function createAndSignVersionedTxWithKeypairs(instructionsChunk: Transacti
 		payerKey: payer.publicKey,
 		recentBlockhash: blockhash,
 		instructions: instructionsChunk,
-	}).compileToV0Message([lookupTableAccount]);
+	}).compileToV0Message(lookupTableAccounts);
 
 	const versionedTx = new VersionedTransaction(message);
 
@@ -162,7 +172,7 @@ async function createAndSignVersionedTxWithKeypairs(instructionsChunk: Transacti
 
 	/*
     // Simulate each txn
-    const simulationResult = await connection.simulateTransaction(versionedTx, { commitment: "processed" });
+    const simulationResult = await getConnection().simulateTransaction(versionedTx, { commitment: "processed" });
 
     if (simulationResult.value.err) {
     console.log("Simulation error:", simulationResult.value.err);
@@ -200,7 +210,7 @@ export async function generateATAandSOL(jitoTipParam?: number) {
 
 		console.log(`[Funding] Starting wallet funding process with jitoTip: ${jitoTip} SOL`);
 		
-		const { blockhash } = await connection.getLatestBlockhash();
+		const { blockhash } = await getConnection().getLatestBlockhash();
 		const sendTxns: VersionedTransaction[] = [];
 
 		console.log(`[Funding] Generating SOL transfer instructions...`);
@@ -233,7 +243,7 @@ export async function createReturns() {
 	const jitoTip = await MenuUI.promptJitoTip();
 	const TipAmt = jitoTip * LAMPORTS_PER_SOL;
 
-	const { blockhash } = await connection.getLatestBlockhash();
+	const { blockhash } = await getConnection().getLatestBlockhash();
 
 	// Iterate over each chunk of keypairs
 	for (let chunkIndex = 0; chunkIndex < chunkedKeypairs.length; chunkIndex++) {
@@ -245,7 +255,7 @@ export async function createReturns() {
 			const keypair = chunk[i];
 			console.log(`Processing keypair ${i + 1}/${chunk.length}:`, keypair.publicKey.toString());
 
-			const balance = await connection.getBalance(keypair.publicKey);
+			const balance = await getConnection().getBalance(keypair.publicKey);
 
 			const sendSOLixs = SystemProgram.transfer({
 				fromPubkey: keypair.publicKey,
@@ -297,6 +307,112 @@ export async function createReturns() {
 	}
 
 	await sendBundleUtil(txsSigned);
+}
+
+/**
+ * Reclaim SOL from all sub-wallets back to the payer (main wallet).
+ * - Designed for API usage: non-interactive, no LUT required
+ * - Leaves a tiny reserve to keep the account usable for future fees (default 5000 lamports)
+ */
+export async function reclaimSOLToPayer(
+	jitoTipParam: number = 0,
+	reserveLamports: number = 5000
+): Promise<{
+	reclaimedLamports: number;
+	skippedWallets: number;
+	txCount: number;
+}> {
+	if (isNaN(jitoTipParam) || jitoTipParam < 0) {
+		throw new Error(`Invalid jitoTip: ${jitoTipParam}. Must be a non-negative number.`);
+	}
+
+	const keypairs = loadKeypairs();
+	if (keypairs.length === 0) {
+		return { reclaimedLamports: 0, skippedWallets: 0, txCount: 0 };
+	}
+
+	const conn = getConnection();
+	const { blockhash } = await conn.getLatestBlockhash();
+
+	// System accounts still need to remain rent-exempt to avoid simulation/runtime failures.
+	// For dataLen=0, mainnet rent-exempt minimum is ~0.00089088 SOL (890,880 lamports).
+	const rentExemptMin = await conn.getMinimumBalanceForRentExemption(0);
+	// Leave rent-exempt minimum + small fee buffer.
+	const effectiveReserveLamports = Math.max(reserveLamports, rentExemptMin + 5000);
+
+	const chunkedKeypairs = chunkArray(keypairs, 7);
+	const txsSigned: VersionedTransaction[] = [];
+	let reclaimedLamports = 0;
+	let skippedWallets = 0;
+
+	const tipLamports = Math.floor(jitoTipParam * LAMPORTS_PER_SOL);
+
+	for (let chunkIndex = 0; chunkIndex < chunkedKeypairs.length; chunkIndex++) {
+		const chunk = chunkedKeypairs[chunkIndex];
+		const instructionsForChunk: TransactionInstruction[] = [];
+		const signers: Keypair[] = [payer];
+
+		for (const kp of chunk) {
+			const balance = await conn.getBalance(kp.publicKey, "confirmed");
+			const sendLamports = balance - effectiveReserveLamports;
+
+			// Skip empty / too-small balances
+			if (sendLamports <= 0) {
+				skippedWallets++;
+				continue;
+			}
+
+			instructionsForChunk.push(
+				SystemProgram.transfer({
+					fromPubkey: kp.publicKey,
+					toPubkey: payer.publicKey,
+					lamports: sendLamports,
+				})
+			);
+			signers.push(kp);
+			reclaimedLamports += sendLamports;
+		}
+
+		// Add optional Jito tip at the end (default 0)
+		if (chunkIndex === chunkedKeypairs.length - 1 && tipLamports > 0) {
+			instructionsForChunk.push(
+				SystemProgram.transfer({
+					fromPubkey: payer.publicKey,
+					toPubkey: getRandomTipAccount(),
+					lamports: BigInt(tipLamports),
+				})
+			);
+		}
+
+		// Nothing to do in this chunk
+		if (instructionsForChunk.length === 0) continue;
+
+		const message = new TransactionMessage({
+			payerKey: payer.publicKey,
+			recentBlockhash: blockhash,
+			instructions: instructionsForChunk,
+		}).compileToV0Message([]);
+
+		const versionedTx = new VersionedTransaction(message);
+		versionedTx.sign(signers);
+		txsSigned.push(versionedTx);
+	}
+
+	if (txsSigned.length === 0) {
+		return { reclaimedLamports: 0, skippedWallets, txCount: 0 };
+	}
+
+	// Reclaim is not latency sensitive; send directly via RPC for reliability (no Jito dependency).
+	for (let i = 0; i < txsSigned.length; i++) {
+		const tx = txsSigned[i];
+		const sig = await conn.sendRawTransaction(tx.serialize(), {
+			skipPreflight: false,
+			maxRetries: 3,
+		});
+		await conn.confirmTransaction(sig, "confirmed");
+	}
+
+	return { reclaimedLamports, skippedWallets, txCount: txsSigned.length };
 }
 
 async function simulateAndWriteBuys() {
@@ -436,7 +552,7 @@ async function checkAllBalances() {
 	
 	// Check dev wallet
 	try {
-		const devBalance = await connection.getBalance(wallet.publicKey);
+		const devBalance = await getConnection().getBalance(wallet.publicKey);
 		const devSolBalance = devBalance / LAMPORTS_PER_SOL;
 		console.log(`Dev Wallet (${wallet.publicKey.toString().substring(0, 8)}...): ${devSolBalance.toFixed(4)} SOL`);
 	} catch (error) {
@@ -445,7 +561,7 @@ async function checkAllBalances() {
 	
 	// Check payer wallet
 	try {
-		const payerBalance = await connection.getBalance(payer.publicKey);
+		const payerBalance = await getConnection().getBalance(payer.publicKey);
 		const payerSolBalance = payerBalance / LAMPORTS_PER_SOL;
 		console.log(`Payer Wallet (${payer.publicKey.toString().substring(0, 8)}...): ${payerSolBalance.toFixed(4)} SOL\n`);
 	} catch (error) {
@@ -457,7 +573,7 @@ async function checkAllBalances() {
 	let totalSol = 0;
 	for (let i = 0; i < keypairs.length; i++) {
 		try {
-			const balance = await connection.getBalance(keypairs[i].publicKey);
+			const balance = await getConnection().getBalance(keypairs[i].publicKey);
 			const solBalance = balance / LAMPORTS_PER_SOL;
 			totalSol += solBalance;
 			console.log(`  Wallet ${i + 1} (${keypairs[i].publicKey.toString().substring(0, 8)}...): ${solBalance.toFixed(4)} SOL`);
@@ -476,7 +592,7 @@ async function checkAllBalances() {
 		// Dev wallet token balance
 		try {
 			const devTokenAccount = await spl.getAssociatedTokenAddress(mint, wallet.publicKey);
-			const devTokenBalance = await connection.getTokenAccountBalance(devTokenAccount);
+			const devTokenBalance = await getConnection().getTokenAccountBalance(devTokenAccount);
 			const tokenAmount = Number(devTokenBalance.value.amount) / 1e6;
 			console.log(`Dev Wallet: ${tokenAmount.toFixed(2)} tokens`);
 		} catch (error) {
@@ -488,7 +604,7 @@ async function checkAllBalances() {
 		for (let i = 0; i < keypairs.length; i++) {
 			try {
 				const tokenAccount = await spl.getAssociatedTokenAddress(mint, keypairs[i].publicKey);
-				const tokenBalance = await connection.getTokenAccountBalance(tokenAccount);
+				const tokenBalance = await getConnection().getTokenAccountBalance(tokenAccount);
 				const tokenAmount = Number(tokenBalance.value.amount) / 1e6;
 				totalTokens += tokenAmount;
 				console.log(`  Wallet ${i + 1}: ${tokenAmount.toFixed(2)} tokens`);

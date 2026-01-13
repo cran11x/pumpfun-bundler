@@ -10,8 +10,13 @@ import {
 	LAMPORTS_PER_SOL,
 	AddressLookupTableAccount,
 } from "@solana/web3.js";
+
+// Fee program constant from IDL
+const FEE_PROGRAM = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
+// Fee config seed bytes from IDL
+const FEE_CONFIG_SEED_BYTES = Buffer.from([1, 86, 224, 246, 147, 102, 90, 207, 68, 219, 21, 104, 191, 23, 91, 170, 81, 137, 203, 151, 245, 210, 255, 59, 101, 93, 43, 182, 253, 109, 24, 176]);
 import { loadKeypairs } from "./createKeys";
-import { sendBundle as sendBundleUtil } from "./utils/bundleSender";
+import { sendBundle as sendBundleUtil, simulateBundle } from "./utils/bundleSender";
 import { MenuUI } from "./ui/menu";
 import * as spl from "@solana/spl-token";
 import bs58 from "bs58";
@@ -35,7 +40,11 @@ export interface TokenInfo {
 	jitoTip: number;
 }
 
-export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: string) {
+export async function buyBundleWithParams(
+	tokenInfo: TokenInfo,
+	imagePath?: string,
+	options?: { dryRun?: boolean }
+) {
 	const provider = new anchor.AnchorProvider(new anchor.web3.Connection(rpc), new anchor.Wallet(wallet), { commitment: "confirmed" });
 
 	// Initialize pumpfun anchor
@@ -45,7 +54,52 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 
 	// Start create bundle
 	const bundledTxns: VersionedTransaction[] = [];
-	const keypairs: Keypair[] = loadKeypairs();
+	const loadedKeypairs: Keypair[] = loadKeypairs();
+
+	// IMPORTANT: ensure bundler wallets are distinct and not the dev wallet.
+	// If keypair files accidentally contain the same secret key as the dev wallet,
+	// the dev wallet will "buy multiple times" (dev buy + bundler buys) and look like duplicates.
+	const devPkStr = wallet.publicKey.toBase58();
+	console.log(`🔑 Dev wallet public key: ${devPkStr}`);
+	console.log(`📦 Loaded ${loadedKeypairs.length} bundler keypair(s) from keypairs directory`);
+	const seenBundlerPks = new Set<string>();
+	const keypairs: Keypair[] = [];
+	for (const kp of loadedKeypairs) {
+		const pkStr = kp.publicKey.toBase58();
+		if (pkStr === devPkStr) {
+			console.warn(`⚠️  Bundler keypair matches dev wallet (${pkStr}). Skipping to avoid duplicate dev buys.`);
+			continue;
+		}
+		if (seenBundlerPks.has(pkStr)) {
+			console.warn(`⚠️  Duplicate bundler keypair detected (${pkStr}). Skipping duplicate.`);
+			continue;
+		}
+		seenBundlerPks.add(pkStr);
+		keypairs.push(kp);
+	}
+	if (keypairs.length !== loadedKeypairs.length) {
+		console.log(`ℹ️  Bundler wallets loaded: ${loadedKeypairs.length}, using: ${keypairs.length} (after dedupe/excluding dev).`);
+	} else {
+		console.log(`✅ Using all ${keypairs.length} bundler wallet(s)`);
+	}
+
+	// Jito bundle hard limit: max 5 transactions per bundle.
+	// Our design is 1 tx for (create + dev buy) + 1 tx per bundler wallet (for correct attribution on explorers).
+	// Therefore max bundler wallets in an atomic bundle = 4.
+	const maxBundleTxs = Number(process.env.JITO_MAX_BUNDLE_TXS ?? "5");
+	const maxBundlerWallets = Math.max(0, maxBundleTxs - 1);
+	if (keypairs.length > maxBundlerWallets) {
+		console.warn(
+			`⚠️  Jito bundle limit hit: would create ${1 + keypairs.length} txs (dev+create + ${keypairs.length} bundler buys), but max is ${maxBundleTxs}. ` +
+				`Capping bundler wallets from ${keypairs.length} → ${maxBundlerWallets} to keep the launch atomic. ` +
+				`(Set env JITO_MAX_BUNDLE_TXS to adjust; hard limit is 5 on mainnet.)`
+		);
+		keypairs.splice(maxBundlerWallets);
+	}
+
+	console.log(
+		`💼 Final buy breakdown: 1 dev wallet (${devPkStr.substring(0, 8)}...) + ${keypairs.length} bundler wallet(s) = ${1 + keypairs.length} total buys`
+	);
 
 	let keyInfo: { [key: string]: any } = {};
 	if (fs.existsSync(keyInfoPath)) {
@@ -62,8 +116,9 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 	const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
 
 	if (lookupTableAccount == null) {
-		console.log("Lookup table account not found!");
-		throw new Error("Lookup table account not found!");
+		console.log("Lookup table account not found! Trying to recreate...");
+        // Instead of crashing, let's suggest the user to recreate the LUT or handle it
+		throw new Error(`Lookup table account (${lut.toBase58()}) not found on-chain. Please create a new LUT in Settings.`);
 	}
 
 	// Use provided token info
@@ -76,26 +131,19 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 	const twitter = tokenInfo.twitter || "";
 	const telegram = tokenInfo.telegram || "";
 	const website = tokenInfo.website || "";
-	// Adjust tip based on available balance
-	const tipInput = tokenInfo.jitoTip;
+	// Tip requested by user (SOL). We'll compute the actual tip later,
+	// after we know how much SOL we need for create + dev buy + rent/fees buffer.
+	const tipInputSol = tokenInfo.jitoTip;
 	
 	// Check wallet balance and adjust tip accordingly
-	let walletBalance = 0;
+	let walletBalanceLamports = 0;
 	try {
-		walletBalance = await connection.getBalance(wallet.publicKey);
+		walletBalanceLamports = await connection.getBalance(wallet.publicKey);
 	} catch (error) {
 		console.log("⚠️  RPC error getting balance, using fallback logic");
 		// Fallback: assume we have enough for small tip
-		walletBalance = 0.05 * LAMPORTS_PER_SOL; // Assume 0.05 SOL available
+		walletBalanceLamports = 0.05 * LAMPORTS_PER_SOL; // Assume 0.05 SOL available
 	}
-	
-	const maxTip = Math.min(tipInput, (walletBalance / LAMPORTS_PER_SOL) - 0.005); // Leave 0.005 SOL for fees
-	const tipAmt = Math.max(maxTip, 0.001) * LAMPORTS_PER_SOL; // Minimum 0.001 SOL
-	
-	if (maxTip < tipInput) {
-		console.log(`⚠️  Adjusted tip from ${tipInput} to ${maxTip} SOL (insufficient balance)`);
-	}
-	console.log(`💰 Using tip: ${tipAmt / LAMPORTS_PER_SOL} SOL`);
 
 	// -------- step 2: build pool init + dev snipe --------
 	const imgPath = imagePath || "./img";
@@ -128,6 +176,7 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 
 	let metadata_uri;
 	try {
+		console.log("Uploading metadata to IPFS...");
 		const response = await axios.post("https://pump.fun/api/ipfs", formData, {
 			headers: {
 				"Content-Type": "multipart/form-data",
@@ -135,9 +184,13 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 		});
 		metadata_uri = response.data.metadataUri;
 		console.log("Metadata URI: ", metadata_uri);
-	} catch (error) {
-		console.error("Error uploading metadata:", error);
-		throw error;
+	} catch (error: any) {
+		console.error("Error uploading metadata to Pump.Fun IPFS:", error.message);
+		if (error.response) {
+			console.error("Response status:", error.response.status);
+			console.error("Response data:", error.response.data);
+		}
+		throw new Error(`Metadata upload failed: ${error.message}`);
 	}
 
 	// FORENSIC SOLUTION: Generate CRYPTOGRAPHICALLY UNIQUE mint for EVERY attempt
@@ -184,21 +237,21 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 	const account7 = metadata;
 
 	const createIx = await program.methods
-		.create(name, symbol, metadata_uri, wallet.publicKey) // Added creator parameter
+		.create(name, symbol, metadata_uri, wallet.publicKey) // Add creator arg (4th parameter)
 		.accounts({
 			mint: account1,
-			mintAuthority: account2,
-			bondingCurve: account3,
-			associatedBondingCurve: associatedBondingCurve,
+			mintAuthority: account2, // camelCase
+			bondingCurve: account3, // camelCase
+			associatedBondingCurve: associatedBondingCurve, // camelCase
 			global: account5,
-			mplTokenMetadata: account6,
+			mplTokenMetadata: account6, // camelCase
 			metadata: account7,
-			user: wallet.publicKey, // Added user account
-			systemProgram: SystemProgram.programId,
-			tokenProgram: spl.TOKEN_PROGRAM_ID,
-			associatedTokenProgram: spl.ASSOCIATED_TOKEN_PROGRAM_ID,
+			user: wallet.publicKey,
+			systemProgram: SystemProgram.programId, // camelCase
+			tokenProgram: spl.TOKEN_PROGRAM_ID, // camelCase
+			associatedTokenProgram: spl.ASSOCIATED_TOKEN_PROGRAM_ID, // camelCase
 			rent: SYSVAR_RENT_PUBKEY,
-			eventAuthority,
+			eventAuthority: eventAuthority, // camelCase
 			program: PUMP_PROGRAM,
 		})
 		.instruction();
@@ -227,21 +280,53 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 		throw new Error(`No key info found for keypair: ${wallet.publicKey.toString()}`);
 	}
 
+	// keyInfo.json often stores numbers as strings (e.g. "0.01"). Normalize.
+	const devSolAmountNum =
+		typeof keypairInfo.solAmount === "string"
+			? parseFloat(keypairInfo.solAmount)
+			: Number(keypairInfo.solAmount);
+	if (!Number.isFinite(devSolAmountNum) || devSolAmountNum <= 0) {
+		throw new Error(
+			`Invalid solAmount for dev wallet (${wallet.publicKey.toString()}): ${keypairInfo.solAmount}`
+		);
+	}
+
 	// Fix: Use solAmount for buying (not tokenAmount which is 0)
-	const solAmountLamports = new BN(keypairInfo.solAmount * LAMPORTS_PER_SOL);
-	const maxSolCost = new BN(keypairInfo.solAmount * LAMPORTS_PER_SOL * 1.1); // 10% slippage
+	const spendableSolInLamports = new BN(Math.floor(devSolAmountNum * LAMPORTS_PER_SOL));
+	// Pump.fun IDL:
+	// - buy(amount, max_sol_cost) => amount is TOKEN amount (base units)
+	// - buy_exact_sol_in(spendable_sol_in, min_tokens_out) => spend SOL budget (what we want here)
+	const minTokensOut = new BN(1); // minimal slippage protection
 
-	// Use original Anchor approach - let it handle account resolution
-	console.log("🔄 Using standard buy instruction without extra accounts...");
+	// ---------------- TIP CALC (IMPORTANT) ----------------
+	// Old logic only ensured "walletBalance - 0.005 SOL", but did NOT account for:
+	// - the dev buy amount (solAmountLamports)
+	// - rent / account creation costs during create+ATA
+	//
+	// When tip is too high, the last instruction (SystemProgram.transfer) fails with a custom error (often 0x1),
+	// and Jito rejects the whole bundle with simulationFailure.
+	const feeAndRentReserveLamports = Math.floor(0.03 * LAMPORTS_PER_SOL); // conservative buffer
+	const requestedTipLamports = Math.floor(tipInputSol * LAMPORTS_PER_SOL);
+	const budgetForTipLamports =
+		walletBalanceLamports - spendableSolInLamports.toNumber() - feeAndRentReserveLamports;
 
-	// Updated for November 2025 IDL - using all required accounts
-	console.log("🔄 Using updated buy instruction with all required accounts...");
+	const tipAmtLamports = Math.max(
+		1000, // Jito minimum tip transfer size is tiny; we just ensure >0 and integer.
+		Math.min(requestedTipLamports, budgetForTipLamports)
+	);
+
+	if (budgetForTipLamports < requestedTipLamports) {
+		console.log(
+			`⚠️  Adjusted tip from ${tipInputSol} to ${tipAmtLamports / LAMPORTS_PER_SOL} SOL (budget after buy+reserve)`
+		);
+	}
+	console.log(`💰 Using tip: ${tipAmtLamports / LAMPORTS_PER_SOL} SOL`);
 	
-	// Try without fee_config and fee_program first - they might be optional
-	console.log("🔄 Testing buy instruction without fee_config accounts...");
-	
-	// Use static creator vault address from successful transaction analysis
-	const creatorVault = new PublicKey("6xBZvTQHo1TuwcoPZfqMHALAjuFy4W2vh9S7PXhBDjVm");
+	// Derive required PDAs for buy instruction
+	const [creatorVault] = PublicKey.findProgramAddressSync(
+		[Buffer.from("creator-vault"), wallet.publicKey.toBuffer()],
+		PUMP_PROGRAM
+	);
 	
 	const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync(
 		[Buffer.from("global_volume_accumulator")],
@@ -253,36 +338,45 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 		PUMP_PROGRAM
 	);
 	
+	const [feeConfig] = PublicKey.findProgramAddressSync(
+		[Buffer.from("fee_config"), FEE_CONFIG_SEED_BYTES],
+		FEE_PROGRAM
+	);
+	
+	// Build buy instruction with all accounts explicitly provided using camelCase keys
+	// Anchor expects camelCase keys for accounts in the .accounts() method
 	const buyIx = await program.methods
-		.buy(solAmountLamports, maxSolCost, { some: true }) // track_volume parameter
+		.buyExactSolIn(spendableSolInLamports, minTokensOut, { some: true }) // spend SOL budget, receive >= minTokensOut
 		.accounts({
 			global: account5,
-			feeRecipient,
+			feeRecipient: feeRecipient, // camelCase
 			mint: account1,
-			bondingCurve: account3,
-			associatedBondingCurve: associatedBondingCurve,
-			associatedUser: ata,
+			bondingCurve: account3, // camelCase
+			associatedBondingCurve: associatedBondingCurve, // camelCase
+			associatedUser: ata, // camelCase
 			user: wallet.publicKey,
-			systemProgram: SystemProgram.programId,
-			tokenProgram: spl.TOKEN_PROGRAM_ID,
-			creatorVault,
-			eventAuthority,
+			systemProgram: SystemProgram.programId, // camelCase
+			tokenProgram: spl.TOKEN_PROGRAM_ID, // camelCase
+			creatorVault: creatorVault, // camelCase
+			rent: SYSVAR_RENT_PUBKEY,
+			eventAuthority: eventAuthority, // camelCase
 			program: PUMP_PROGRAM,
-			globalVolumeAccumulator,
-			userVolumeAccumulator
-			// Removed fee_config and fee_program - they seem to be causing issues
+			globalVolumeAccumulator: globalVolumeAccumulator, // camelCase
+			userVolumeAccumulator: userVolumeAccumulator, // camelCase
+			feeConfig: feeConfig, // camelCase
+			feeProgram: FEE_PROGRAM, // camelCase
 		})
 		.instruction();
 
 	// FORENSIC SOLUTION: Dynamic tip account rotation (Nov 2025 best practice)
 	const randomTipAccount = getRandomTipAccount();
 	console.log(`💰 Using tip account: ${randomTipAccount.toBase58()}`);
-	console.log(`💎 Tip amount: ${tipAmt / LAMPORTS_PER_SOL} SOL (Above 1000 lamport minimum)`);
+	console.log(`💎 Tip amount: ${tipAmtLamports / LAMPORTS_PER_SOL} SOL (Above 1000 lamport minimum)`);
 	
 	const tipIxn = SystemProgram.transfer({
 		fromPubkey: wallet.publicKey,
 		toPubkey: randomTipAccount,
-		lamports: BigInt(tipAmt),
+		lamports: BigInt(tipAmtLamports),
 	});
 
 	// FORENSIC FIX: Conditional ATA inclusion to prevent AlreadyInitialized
@@ -334,10 +428,24 @@ export async function buyBundleWithParams(tokenInfo: TokenInfo, imagePath?: stri
 	console.log(`   1. CREATE token + Dev wallet buy`);
 	console.log(`   2-${bundledTxns.length}. Bundler wallet buys (all atomic)`);
 	console.log(`\n💡 All transactions will execute in the same block - snipers cannot front-run!\n`);
-	
+
+	// DRY RUN: simulate only, do not send (safe for testing)
+	if (options?.dryRun) {
+		console.log("🧪 DRY RUN enabled: simulating bundle only (will NOT be sent).");
+		const simulationPassed = await simulateBundle(bundledTxns);
+		console.log(`🧪 DRY RUN simulation result: ${simulationPassed ? "PASS" : "FAIL"}`);
+		return { success: simulationPassed, dryRun: true, simulationPassed, mint: mintKp.publicKey.toString() };
+	}
+
 	await sendBundleUtil(bundledTxns);
-	
-	return { success: true, mint: mintKp.publicKey.toString() };
+
+	// Return tx signatures so the caller can verify on explorers.
+	const txSignatures = bundledTxns
+		.map((tx) => tx.signatures?.[0])
+		.filter((s): s is Uint8Array => !!s && s.length > 0)
+		.map((s) => bs58.encode(Buffer.from(s)));
+
+	return { success: true, mint: mintKp.publicKey.toString(), txSignatures };
 }
 
 export async function buyBundle() {
@@ -386,7 +494,6 @@ async function createWalletSwaps(
 	program: Program
 ): Promise<VersionedTransaction[]> {
 	const txsSigned: VersionedTransaction[] = [];
-	const chunkedKeypairs = chunkArray(keypairs, 3); // Reduced from 6 to 3 due to new IDL accounts
 
 	// Load keyInfo data from JSON file
 	let keyInfo: { [key: string]: { solAmount: number; tokenAmount: string; percentSupply: number } } = {};
@@ -395,104 +502,131 @@ async function createWalletSwaps(
 		keyInfo = JSON.parse(existingData);
 	}
 
-	// Iterate over each chunk of keypairs
-	for (let chunkIndex = 0; chunkIndex < chunkedKeypairs.length; chunkIndex++) {
-		const chunk = chunkedKeypairs[chunkIndex];
-		const instructionsForChunk: TransactionInstruction[] = [];
+	// IMPORTANT:
+	// We intentionally build *one transaction per bundler wallet* with that wallet as the fee payer.
+	// Many UIs (Axiom etc) label the "trader" using the tx fee payer; if dev/payer pays fees for
+	// all bundler buys, it will look like only the dev wallet bought.
+	for (let i = 0; i < keypairs.length; i++) {
+		const keypair = keypairs[i];
+		console.log(`Processing bundler wallet ${i + 1}/${keypairs.length}:`, keypair.publicKey.toString());
 
-		// Iterate over each keypair in the chunk to create swap instructions
-		for (let i = 0; i < chunk.length; i++) {
-			const keypair = chunk[i];
-			console.log(`Processing keypair ${i + 1}/${chunk.length}:`, keypair.publicKey.toString());
-
-			// Extract tokenAmount from keyInfo for this keypair FIRST
-			const keypairInfo = keyInfo[keypair.publicKey.toString()];
-			if (!keypairInfo) {
-				console.log(`No key info found for keypair: ${keypair.publicKey.toString()}`);
-				console.log(`Skipping keypair without keyInfo data`);
-				continue; // Skip this keypair completely
-			}
-
-			const ataAddress = await spl.getAssociatedTokenAddress(mint, keypair.publicKey);
-			
-			// FORENSIC FIX: Check if ATA exists before creating
-			const ataExists = await connection.getAccountInfo(ataAddress);
-			const createTokenAta = ataExists ? null : spl.createAssociatedTokenAccountIdempotentInstruction(payer.publicKey, ataAddress, keypair.publicKey, mint);
-
-			// Fix: Use solAmount for buying (not tokenAmount which is 0)
-			const solAmountLamports = new BN(keypairInfo.solAmount * LAMPORTS_PER_SOL);
-			const maxSolCost = new BN(keypairInfo.solAmount * LAMPORTS_PER_SOL * 1.1); // 10% slippage
-
-			// Use static creator vault address from successful transaction analysis
-			const creatorVault = new PublicKey("6xBZvTQHo1TuwcoPZfqMHALAjuFy4W2vh9S7PXhBDjVm");
-			
-			const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync(
-				[Buffer.from("global_volume_accumulator")],
-				PUMP_PROGRAM
-			);
-			
-			const [userVolumeAccumulator] = PublicKey.findProgramAddressSync(
-				[Buffer.from("user_volume_accumulator"), keypair.publicKey.toBuffer()],
-				PUMP_PROGRAM
-			);
-
-			const buyIx = await program.methods
-				.buy(solAmountLamports, maxSolCost, { some: true }) // track_volume parameter
-				.accounts({
-					global,
-					feeRecipient,
-					mint,
-					bondingCurve,
-					associatedBondingCurve,
-					associatedUser: ataAddress,
-					user: keypair.publicKey,
-					systemProgram: SystemProgram.programId,
-					tokenProgram: spl.TOKEN_PROGRAM_ID,
-					creatorVault,
-					eventAuthority,
-					program: PUMP_PROGRAM,
-					globalVolumeAccumulator,
-					userVolumeAccumulator
-					// Removed fee_config and fee_program - they seem to be causing issues
-				})
-				.instruction();
-
-			// Only add ATA creation if needed
-			if (createTokenAta) {
-				instructionsForChunk.push(createTokenAta);
-			}
-			instructionsForChunk.push(buyIx);
+		const keypairInfo = keyInfo[keypair.publicKey.toString()];
+		if (!keypairInfo) {
+			console.log(`No key info found for keypair: ${keypair.publicKey.toString()} — skipping`);
+			continue;
 		}
 
+		const solAmountNum =
+			typeof (keypairInfo as any).solAmount === "string"
+				? parseFloat((keypairInfo as any).solAmount)
+				: Number((keypairInfo as any).solAmount);
+		if (!Number.isFinite(solAmountNum) || solAmountNum <= 0) {
+			console.warn(
+				`Skipping keypair with missing/invalid solAmount: ${keypair.publicKey.toString()} (solAmount=${(keypairInfo as any).solAmount})`
+			);
+			continue;
+		}
+
+		const instructions: TransactionInstruction[] = [];
+
+		const ataAddress = await spl.getAssociatedTokenAddress(mint, keypair.publicKey);
+		const ataExists = await connection.getAccountInfo(ataAddress);
+		const devPaysAtaRent = process.env.BUNDLER_DEV_PAYS_ATA_RENT !== "false";
+		if (!ataExists) {
+			// IMPORTANT (root cause of dropped bundles):
+			// Sub-wallets are often funded with ~solAmount only (e.g. 0.02 SOL) but ATA creation requires ~0.002 SOL rent.
+			// If the sub-wallet also tries to spend 0.02 SOL in buyExactSolIn, the tx becomes invalid (insufficient funds),
+			// and Jito drops/rejects the entire bundle.
+			//
+			// Fix: by default, dev wallet pays ATA rent while the sub-wallet remains the tx fee payer + user.
+			const ataRentPayer = devPaysAtaRent ? wallet.publicKey : keypair.publicKey;
+			instructions.push(
+				spl.createAssociatedTokenAccountIdempotentInstruction(
+					ataRentPayer,
+					ataAddress,
+					keypair.publicKey,
+					mint
+				)
+			);
+		}
+
+		// Balance guard: bundler wallet must cover spendable SOL budget + tx fee buffer.
+		// (Program-created accounts during buyExactSolIn are expected to be covered by spendable_sol_in itself.)
+		const bundlerBalanceLamports = await connection.getBalance(keypair.publicKey);
+		const txFeeReserveLamports = Math.floor(0.00002 * LAMPORTS_PER_SOL); // conservative fee buffer
+
+		const spendableSolInLamports = new BN(Math.floor(solAmountNum * LAMPORTS_PER_SOL));
+		const minTokensOut = new BN(1);
+		if (bundlerBalanceLamports < spendableSolInLamports.toNumber() + txFeeReserveLamports) {
+			const have = bundlerBalanceLamports / LAMPORTS_PER_SOL;
+			const need = (spendableSolInLamports.toNumber() + txFeeReserveLamports) / LAMPORTS_PER_SOL;
+			console.warn(
+				`⚠️ Bundler wallet ${keypair.publicKey.toBase58()} insufficient SOL for buy. ` +
+					`Have ${have.toFixed(6)} SOL, need >= ${need.toFixed(6)} SOL (buy ${solAmountNum} + fee buffer). ` +
+					`Fund it more or reduce solAmount.`
+			);
+			continue;
+		}
+
+		const [creatorVault] = PublicKey.findProgramAddressSync(
+			[Buffer.from("creator-vault"), wallet.publicKey.toBuffer()],
+			PUMP_PROGRAM
+		);
+		const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync(
+			[Buffer.from("global_volume_accumulator")],
+			PUMP_PROGRAM
+		);
+		const [userVolumeAccumulator] = PublicKey.findProgramAddressSync(
+			[Buffer.from("user_volume_accumulator"), keypair.publicKey.toBuffer()],
+			PUMP_PROGRAM
+		);
+		const [feeConfig] = PublicKey.findProgramAddressSync(
+			[Buffer.from("fee_config"), FEE_CONFIG_SEED_BYTES],
+			FEE_PROGRAM
+		);
+
+		const buyIx = await program.methods
+			.buyExactSolIn(spendableSolInLamports, minTokensOut, { some: true })
+			.accounts({
+				global,
+				feeRecipient: feeRecipient,
+				mint,
+				bondingCurve,
+				associatedBondingCurve,
+				associatedUser: ataAddress,
+				user: keypair.publicKey,
+				systemProgram: SystemProgram.programId,
+				tokenProgram: spl.TOKEN_PROGRAM_ID,
+				creatorVault,
+				rent: SYSVAR_RENT_PUBKEY,
+				eventAuthority,
+				program: PUMP_PROGRAM,
+				globalVolumeAccumulator,
+				userVolumeAccumulator,
+				feeConfig,
+				feeProgram: FEE_PROGRAM,
+			})
+			.instruction();
+		instructions.push(buyIx);
 
 		const message = new TransactionMessage({
-			payerKey: payer.publicKey,
+			payerKey: keypair.publicKey,
 			recentBlockhash: blockhash,
-			instructions: instructionsForChunk,
+			instructions,
 		}).compileToV0Message([lut]);
 
 		const serializedMsg = message.serialize();
-		console.log("Txn size:", serializedMsg.length);
-		if (serializedMsg.length > 1232) {
-			console.log("tx too big");
-		}
-
-		const versionedTx = new VersionedTransaction(message);
-
 		console.log(
-			"Signing transaction with chunk signers",
-			chunk.map((kp) => kp.publicKey.toString())
+			`Bundler tx payer=${keypair.publicKey.toBase58()} user=${keypair.publicKey.toBase58()} size=${serializedMsg.length} (ataCreate=${ataExists ? "no" : "yes"})`
 		);
 
-		// Sign with the wallet for tip on the last instruction
-		for (const kp of chunk) {
-			if (kp.publicKey.toString() in keyInfo) {
-				versionedTx.sign([kp]);
-			}
+		const versionedTx = new VersionedTransaction(message);
+		// Sign with bundler wallet always. If dev paid ATA rent in this tx, dev must sign too.
+		if (!ataExists && devPaysAtaRent) {
+			versionedTx.sign([keypair, wallet]);
+		} else {
+			versionedTx.sign([keypair]);
 		}
-
-		versionedTx.sign([payer]);
-
 		txsSigned.push(versionedTx);
 	}
 

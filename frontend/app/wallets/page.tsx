@@ -5,7 +5,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { useWalletStore } from "@/lib/store";
 import { useEffect, useState } from "react";
-import { getWallets, getBalances, createWallets, fundWallets, getMainWallet } from "@/lib/api";
+import { getWallets, getBalances, createWallets, fundWallets, reclaimWallets, getMainWallet } from "@/lib/api";
 import { Wallet, Plus, DollarSign, RefreshCw, Copy, Check, Crown, X } from "lucide-react";
 
 export default function WalletsPage() {
@@ -16,6 +16,11 @@ export default function WalletsPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [showFundModal, setShowFundModal] = useState(false);
   const [fundAmount, setFundAmount] = useState("0.1");
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [walletCount, setWalletCount] = useState("12");
+  const [showReclaimModal, setShowReclaimModal] = useState(false);
+  const [reclaiming, setReclaiming] = useState(false);
+  const [reclaimTip, setReclaimTip] = useState("0");
 
   useEffect(() => {
     loadData();
@@ -80,24 +85,19 @@ export default function WalletsPage() {
     }
   };
 
-  const handleCreateWallets = async () => {
-    const countInput = prompt("How many wallets do you want to create? (1-24)", "12");
-    
-    if (!countInput) {
-      return; // User cancelled
-    }
-    
-    const count = parseInt(countInput);
+  const handleCreateWallets = () => {
+    setShowCreateModal(true);
+  };
+
+  const handleCreateConfirm = async () => {
+    const count = parseInt(walletCount);
     
     if (isNaN(count) || count < 1 || count > 24) {
       alert("Please enter a number between 1 and 24");
       return;
     }
     
-    if (!confirm(`This will create ${count} new wallets. Existing wallets will be replaced. Continue?`)) {
-      return;
-    }
-    
+    setShowCreateModal(false);
     setCreating(true);
     try {
       const result = await createWallets(count);
@@ -133,6 +133,33 @@ export default function WalletsPage() {
 
   const handleFundWallets = () => {
     setShowFundModal(true);
+  };
+
+  const handleReclaimWallets = () => {
+    setShowReclaimModal(true);
+  };
+
+  const handleReclaimConfirm = async () => {
+    setShowReclaimModal(false);
+    setReclaiming(true);
+    try {
+      const tip = reclaimTip.trim() ? parseFloat(reclaimTip.trim()) : 0;
+      if (isNaN(tip) || tip < 0) {
+        alert("Please enter a valid non-negative number for Jito tip.");
+        setReclaiming(false);
+        return;
+      }
+
+      await reclaimWallets(tip);
+      alert("Reclaim initiated! Funds will be returned to the main wallet shortly.");
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      await loadData();
+    } catch (error: any) {
+      alert(`Failed to reclaim SOL: ${error.message || error.toString()}`);
+      console.error("Failed to reclaim SOL:", error);
+    } finally {
+      setReclaiming(false);
+    }
   };
 
   const handleFundConfirm = async () => {
@@ -178,6 +205,10 @@ export default function WalletsPage() {
             <Button type="button" variant="secondary" onClick={handleFundWallets} disabled={funding}>
               <DollarSign className="w-4 h-4 mr-2" />
               Fund Wallets
+            </Button>
+            <Button type="button" variant="ghost" onClick={handleReclaimWallets} disabled={reclaiming}>
+              <RefreshCw className={`w-4 h-4 mr-2 ${reclaiming ? "animate-spin" : ""}`} />
+              Reclaim SOL
             </Button>
           </div>
         </div>
@@ -323,6 +354,136 @@ export default function WalletsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Create Wallets Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-md border-[#00ff41]/30">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Plus className="w-5 h-5 text-[#00ff41]" />
+                  Create New Wallets
+                </CardTitle>
+                <button
+                  onClick={() => setShowCreateModal(false)}
+                  className="p-2 hover:bg-white/10 rounded transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Number of Wallets (1-24)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="24"
+                  value={walletCount}
+                  onChange={(e) => setWalletCount(e.target.value)}
+                  className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                  placeholder="12"
+                  autoFocus
+                />
+                <p className="text-xs text-yellow-400 mt-2">
+                  ⚠️ Warning: This will replace all existing wallets!
+                </p>
+              </div>
+              <div className="flex gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={handleCreateConfirm}
+                  disabled={creating}
+                  className="flex-1"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  {creating ? "Creating..." : "Create Wallets"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setShowCreateModal(false)}
+                  disabled={creating}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Reclaim SOL Modal */}
+      {showReclaimModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <Card className="w-full max-w-md border-[#00ff41]/30">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <RefreshCw className="w-5 h-5 text-[#00ff41]" />
+                  Reclaim SOL to Main Wallet
+                </CardTitle>
+                <button
+                  onClick={() => setShowReclaimModal(false)}
+                  className="p-2 hover:bg-white/10 rounded transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-400" />
+                </button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="text-sm text-gray-400">
+                This will transfer SOL from all sub-wallets back to your main/payer wallet.
+                A tiny amount may be left in each sub-wallet for future fees.
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Jito Tip (SOL) (optional)
+                </label>
+                <input
+                  type="number"
+                  step="0.001"
+                  min="0"
+                  value={reclaimTip}
+                  onChange={(e) => setReclaimTip(e.target.value)}
+                  className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                  placeholder="0"
+                  autoFocus
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  Set to 0 to reclaim without tipping. Tipping is usually only needed on mainnet for priority.
+                </p>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={handleReclaimConfirm}
+                  disabled={reclaiming}
+                  className="flex-1"
+                >
+                  <RefreshCw className={`w-4 h-4 mr-2 ${reclaiming ? "animate-spin" : ""}`} />
+                  {reclaiming ? "Reclaiming..." : "Reclaim SOL"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setShowReclaimModal(false)}
+                  disabled={reclaiming}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Fund Wallets Modal */}
       {showFundModal && (
