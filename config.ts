@@ -23,6 +23,8 @@ const heliusApiKey = process.env.HELIUS_API_KEY;
 if (!heliusApiKey) {
   throw new Error("HELIUS_API_KEY environment variable is required. Please set it in your .env file.");
 }
+// TypeScript: After the check above, heliusApiKey is guaranteed to be a string
+const heliusApiKeyString: string = heliusApiKey;
 
 // Helper function to read .env file and get NETWORK_MODE
 function readNetworkModeFromEnv(): NetworkMode {
@@ -61,7 +63,7 @@ export function getNetworkMode(): NetworkMode {
 // Function to get current RPC URL (always reads from .env)
 export function getRpcUrl(): string {
   const network = getNetworkMode();
-  const defaultRpc = getHeliusRpcUrl(network, heliusApiKey);
+  const defaultRpc = getHeliusRpcUrl(network, heliusApiKeyString);
   return process.env.HELIUS_RPC_URL || defaultRpc;
 }
 
