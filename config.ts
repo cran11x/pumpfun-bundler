@@ -18,7 +18,11 @@ dotenv.config();
 // Set NETWORK_MODE in .env file to switch networks
 export type NetworkMode = "mainnet" | "devnet";
 
-const heliusApiKey = process.env.HELIUS_API_KEY || "aad77f97-2471-47d4-ba2d-af877586f97e";
+// ⚠️ SECURITY: Never hardcode API keys. Always use environment variables.
+const heliusApiKey = process.env.HELIUS_API_KEY;
+if (!heliusApiKey) {
+  throw new Error("HELIUS_API_KEY environment variable is required. Please set it in your .env file.");
+}
 
 // Helper function to read .env file and get NETWORK_MODE
 function readNetworkModeFromEnv(): NetworkMode {

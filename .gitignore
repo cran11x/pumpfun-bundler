@@ -46,10 +46,36 @@ temp/
 *.backup
 *.bak
 
-# Sensitive keypair files
+# Sensitive keypair files - NEVER COMMIT THESE
 src/keypairs/*.json
+src/keypairs/**/*.json
 src/keyInfo.json
+
+# Jito and authentication keypairs - NEVER COMMIT THESE
+blockengine.json
+payer.json
+auth-keypair.json
+jito-keypair.json
+
+# Wallet files - NEVER COMMIT THESE
+main-wallet.json
+keypair*.json
+*.keypair.json
+**/keypair*.json
 
 # Compiled TypeScript (keep only .ts files)
 src/**/*.js
 clients/**/*.js
+
+# Uploads directory (may contain sensitive data)
+uploads/
+!uploads/.gitkeep
+
+# Logs directory
+logs/
+!logs/.gitkeep
+
+# Sensitive configuration files
+config.local.ts
+*.secret.*
+*.private.*

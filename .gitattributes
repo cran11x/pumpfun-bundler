@@ -1,0 +1,29 @@
+# Prevent accidental commits of sensitive files
+*.json filter=git-crypt diff=git-crypt
+src/keypairs/** filter=git-crypt diff=git-crypt
+blockengine.json filter=git-crypt diff=git-crypt
+payer.json filter=git-crypt diff=git-crypt
+*.keypair.json filter=git-crypt diff=git-crypt
+
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Explicitly declare text files you want to always be normalized and converted
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+
+# Denote all files that are truly binary and should not be modified
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.svg binary
+*.woff binary
+*.woff2 binary
+
