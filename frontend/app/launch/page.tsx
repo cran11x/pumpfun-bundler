@@ -15,6 +15,8 @@ export default function LaunchPage() {
     twitter: "",
     telegram: "",
     website: "",
+    tiktok: "",
+    youtube: "",
     jitoTip: "0.05",
   });
   const [image, setImage] = useState<File | null>(null);
@@ -219,6 +221,32 @@ export default function LaunchPage() {
                     onChange={(e) => setFormData({ ...formData, website: e.target.value })}
                     className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
                     placeholder="https://yourproject.com"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    TikTok URL
+                  </label>
+                  <input
+                    type="url"
+                    value={formData.tiktok}
+                    onChange={(e) => setFormData({ ...formData, tiktok: e.target.value })}
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    placeholder="https://www.tiktok.com/@yourproject"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    YouTube URL
+                  </label>
+                  <input
+                    type="url"
+                    value={formData.youtube}
+                    onChange={(e) => setFormData({ ...formData, youtube: e.target.value })}
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    placeholder="https://www.youtube.com/@yourproject"
                   />
                 </div>
 

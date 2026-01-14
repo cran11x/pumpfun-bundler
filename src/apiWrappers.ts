@@ -33,6 +33,8 @@ export async function buyBundleWithParams(params: {
   twitter?: string;
   telegram?: string;
   website?: string;
+  tiktok?: string;
+  youtube?: string;
   jitoTip: number;
   imagePath: string;
   dryRun?: boolean;
@@ -45,6 +47,8 @@ export async function buyBundleWithParams(params: {
     twitter: params.twitter,
     telegram: params.telegram,
     website: params.website,
+    tiktok: params.tiktok,
+    youtube: params.youtube,
     jitoTip: params.jitoTip,
   }, params.imagePath, { dryRun: params.dryRun });
 }

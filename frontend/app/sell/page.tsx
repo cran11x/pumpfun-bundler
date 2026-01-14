@@ -23,7 +23,7 @@ export default function SellPage() {
   const [selectedWallet, setSelectedWallet] = useState<string>("");
   const [selectedWallets, setSelectedWallets] = useState<string[]>([]);
   const [walletPercentages, setWalletPercentages] = useState<Record<string, number>>({});
-  const [dryRun, setDryRun] = useState(true);
+  const [dryRun, setDryRun] = useState(false);
   const [jitoTip, setJitoTip] = useState("0.01");
   const [mintBalances, setMintBalances] = useState<Record<string, { uiAmount: number; decimals: number; amount: string }>>({});
   const [perWalletPct, setPerWalletPct] = useState<Record<string, number>>({});

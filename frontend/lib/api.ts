@@ -223,6 +223,8 @@ export const launchToken = async (data: {
   twitter?: string;
   telegram?: string;
   website?: string;
+  tiktok?: string;
+  youtube?: string;
   image: File;
   jitoTip: number;
 }) => {
@@ -233,6 +235,8 @@ export const launchToken = async (data: {
   if (data.twitter) formData.append("twitter", data.twitter);
   if (data.telegram) formData.append("telegram", data.telegram);
   if (data.website) formData.append("website", data.website);
+  if (data.tiktok) formData.append("tiktok", data.tiktok);
+  if (data.youtube) formData.append("youtube", data.youtube);
   formData.append("image", data.image);
   formData.append("jitoTip", data.jitoTip.toString());
 

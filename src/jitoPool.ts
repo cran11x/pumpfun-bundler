@@ -37,6 +37,8 @@ export interface TokenInfo {
 	twitter?: string;
 	telegram?: string;
 	website?: string;
+	tiktok?: string;
+	youtube?: string;
 	jitoTip: number;
 }
 
@@ -131,6 +133,8 @@ export async function buyBundleWithParams(
 	const twitter = tokenInfo.twitter || "";
 	const telegram = tokenInfo.telegram || "";
 	const website = tokenInfo.website || "";
+	const tiktok = tokenInfo.tiktok || "";
+	const youtube = tokenInfo.youtube || "";
 	// Tip requested by user (SOL). We'll compute the actual tip later,
 	// after we know how much SOL we need for create + dev buy + rent/fees buffer.
 	const tipInputSol = tokenInfo.jitoTip;
@@ -172,6 +176,8 @@ export async function buyBundleWithParams(
 	formData.append("twitter", twitter);
 	formData.append("telegram", telegram);
 	formData.append("website", website);
+	formData.append("tiktok", tiktok);
+	formData.append("youtube", youtube);
 	formData.append("showName", "true");
 
 	let metadata_uri;

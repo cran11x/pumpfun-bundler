@@ -622,7 +622,7 @@ app.post("/api/wallets/reclaim", async (req, res) => {
 // Launch - calls buyBundle
 app.post("/api/launch", upload.single("image"), async (req, res) => {
   try {
-    const { name, symbol, description, twitter, telegram, website, jitoTip, dryRun } = req.body;
+    const { name, symbol, description, twitter, telegram, website, tiktok, youtube, jitoTip, dryRun } = req.body;
     const image = req.file;
 
     if (!image) {
@@ -678,6 +678,8 @@ app.post("/api/launch", upload.single("image"), async (req, res) => {
       twitter: twitter || "",
       telegram: telegram || "",
       website: website || "",
+      tiktok: tiktok || "",
+      youtube: youtube || "",
       jitoTip: parseFloat(jitoTip || "0.05"),
       imagePath: imgDir,
       dryRun: dryRun === true || dryRun === "true" || dryRun === "1",
@@ -694,6 +696,8 @@ app.post("/api/launch", upload.single("image"), async (req, res) => {
         twitter,
         telegram,
         website,
+        tiktok,
+        youtube,
         jitoTip: parseFloat(jitoTip || "0.05"),
       },
     });
