@@ -9,7 +9,8 @@ import { TrendingDown, Loader2 } from "lucide-react";
 
 export default function SellPage() {
   const [percentage, setPercentage] = useState(50);
-  const [selling, setSelling] = useState(false);
+  const [sellingGlobal, setSellingGlobal] = useState(false);
+  const [sellingByWallet, setSellingByWallet] = useState<Record<string, boolean>>({});
   const [sellType, setSellType] = useState<"pumpfun" | "raydium">("pumpfun");
   const [marketId, setMarketId] = useState("");
   const [mint, setMint] = useState("");
@@ -115,7 +116,7 @@ export default function SellPage() {
       alert("Mint is required");
       return;
     }
-    setSelling(true);
+    setSellingByWallet((prev) => ({ ...prev, [walletPk]: true }));
     try {
       const parsedTip = parseFloat(jitoTip);
       await sellPumpFun({
@@ -132,7 +133,7 @@ export default function SellPage() {
     } catch (e: any) {
       alert(`Sell failed: ${e?.message ?? String(e)}`);
     } finally {
-      setSelling(false);
+      setSellingByWallet((prev) => ({ ...prev, [walletPk]: false }));
     }
   };
 
@@ -150,7 +151,7 @@ export default function SellPage() {
       return;
     }
     
-    setSelling(true);
+    setSellingGlobal(true);
     try {
       if (sellType === "pumpfun") {
         const parsedTip = parseFloat(jitoTip);
@@ -192,7 +193,7 @@ export default function SellPage() {
       alert(`Sell failed: ${error.message || error.toString()}`);
       console.error("Sell error:", error);
     } finally {
-      setSelling(false);
+      setSellingGlobal(false);
     }
   };
 
@@ -546,12 +547,12 @@ export default function SellPage() {
                   className="w-full"
                   onClick={handleSell}
                   disabled={
-                    selling ||
+                    sellingGlobal ||
                     (sellType === "raydium" && !marketId.trim()) ||
                     (sellType === "pumpfun" && (!mint.trim() || (sellMode === "single" && !selectedWallet) || sellMode === "per-wallet"))
                   }
                 >
-                  {selling ? (
+                  {sellingGlobal ? (
                     <>
                       <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                       Selling...
@@ -618,7 +619,7 @@ export default function SellPage() {
                   const isDev = w.label === "Dev Wallet";
                   const bal = mintBalances[w.publicKey]?.uiAmount ?? 0;
                   const pct = perWalletPct[w.publicKey] ?? 5;
-                  const disabled = selling || bal <= 0;
+                  const disabled = sellingGlobal || !!sellingByWallet[w.publicKey] || bal <= 0;
                   return (
                     <div
                       key={w.publicKey}
@@ -672,7 +673,7 @@ export default function SellPage() {
                           disabled={disabled}
                           onClick={() => sellOneWallet(w.publicKey, pct)}
                         >
-                          Sell {pct}%
+                          {sellingByWallet[w.publicKey] ? "Selling..." : `Sell ${pct}%`}
                         </Button>
                       </div>
 

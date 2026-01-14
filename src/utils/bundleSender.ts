@@ -338,7 +338,7 @@ export async function sendBundle(
 			}
 
 			// Best-effort: wait briefly for a BundleResult update (accepted/processed/finalized/rejected/dropped).
-			const statusTimeoutMs = Number(process.env.JITO_BUNDLE_STATUS_TIMEOUT_MS ?? "20000");
+			const statusTimeoutMs = Number(process.env.JITO_BUNDLE_STATUS_TIMEOUT_MS ?? "3000");
 			const update = await waitForBundleResult({
 				searcherClient: usedClient,
 				bundleId,
