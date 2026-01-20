@@ -293,6 +293,17 @@ export const extendLUT = async (jitoTip: number) => {
   return response.data;
 };
 
+// Reset app
+export const resetApp = async (keepMainWallet: boolean = true) => {
+  const response = await api.post("/reset", { keepMainWallet });
+  return response.data as {
+    success: boolean;
+    message: string;
+    actions: string[];
+    keptMainWallet: boolean;
+  };
+};
+
 // Config
 export const getConfig = async () => {
   const response = await api.get("/config");

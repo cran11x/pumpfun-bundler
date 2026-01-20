@@ -96,7 +96,16 @@ export default function LaunchPage() {
       alert("Token launch initiated! Check console for details.");
       console.log("Launch result:", result);
     } catch (error: any) {
-      alert(`Launch failed: ${error.message}`);
+      const apiMessage =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        "Unknown error";
+      const apiHint = error?.response?.data?.hint;
+      const apiDetails = error?.response?.data?.details;
+      const hintLine = apiHint ? `\nHint: ${apiHint}` : "";
+      const detailsLine = apiDetails ? `\nDetails: ${apiDetails}` : "";
+      alert(`Launch failed: ${apiMessage}${hintLine}${detailsLine}`);
       console.error("Launch error:", error);
     } finally {
       setLaunching(false);

@@ -113,7 +113,16 @@ export async function buyBundleWithParams(
 		throw new Error("Address LUT not found in keyInfo. Please create a LUT first.");
 	}
 
-	const lut = new PublicKey(keyInfo.addressLUT.toString());
+	// Guard against placeholder/default values (common when keyInfo.json is preseeded)
+	const lutStr = String(keyInfo.addressLUT).trim();
+	if (lutStr === "11111111111111111111111111111111") {
+		throw new Error(
+			"Invalid LUT address in src/keyInfo.json (addressLUT is set to the System Program placeholder).\n" +
+				"Create a Lookup Table (LUT) first (Website: Settings → LUT → Create, or POST /api/lut/create)."
+		);
+	}
+
+	const lut = new PublicKey(lutStr);
 
 	const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
 

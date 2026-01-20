@@ -84,12 +84,19 @@ export async function sellPumpFunWithParams(
     throw new Error("LUT must be set before selling");
   }
 
+  const lutStr = String(poolInfo.addressLUT).trim();
+  if (lutStr === "11111111111111111111111111111111") {
+    throw new Error(
+      "Invalid LUT address in src/keyInfo.json (addressLUT is set to the System Program placeholder). Create a LUT first."
+    );
+  }
+
   if (!options?.mint && !poolInfo.mint) {
     throw new Error("Mint is required (either pass mint param or set keyInfo.json mint)");
   }
   const mintPubkey = new PublicKey(options?.mint ?? poolInfo.mint);
   
-  const lut = new PublicKey(poolInfo.addressLUT.toString());
+  const lut = new PublicKey(lutStr);
   const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
   
   if (lookupTableAccount == null) {
@@ -485,8 +492,15 @@ export async function sellRaydiumWithParams(percentage: number, marketId: string
   if (!poolInfo.addressLUT || !poolInfo.mint) {
     throw new Error("LUT and mint must be set before selling");
   }
+
+  const lutStr = String(poolInfo.addressLUT).trim();
+  if (lutStr === "11111111111111111111111111111111") {
+    throw new Error(
+      "Invalid LUT address in src/keyInfo.json (addressLUT is set to the System Program placeholder). Create a LUT first."
+    );
+  }
   
-  const lut = new PublicKey(poolInfo.addressLUT.toString());
+  const lut = new PublicKey(lutStr);
   const lookupTableAccount = (await connection.getAddressLookupTable(lut)).value;
   
   if (lookupTableAccount == null) {

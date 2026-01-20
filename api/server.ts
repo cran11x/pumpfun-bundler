@@ -619,6 +619,51 @@ app.post("/api/wallets/reclaim", async (req, res) => {
   }
 });
 
+const formatLaunchError = (error: any) => {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+      ? error
+      : error?.message ?? "Launch failed";
+
+  const lower = message.toLowerCase();
+  let status = 500;
+  let hint: string | undefined;
+
+  if (lower.includes("lut") || lower.includes("lookup table") || lower.includes("addresslut")) {
+    status = 400;
+    hint = "Create/extend the LUT in Settings → LUT, then retry.";
+  } else if (lower.includes("no wallets") || lower.includes("create wallets")) {
+    status = 400;
+    hint = "Create wallets first in Settings → Wallets.";
+  } else if (lower.includes("pump.fun program not found")) {
+    status = 400;
+    hint = "Switch to MAINNET in Settings (Pump.Fun is mainnet-only).";
+  } else if (lower.includes("pumpfun-idl.json")) {
+    status = 400;
+    hint = "Place pumpfun-IDL.json in the project root.";
+  } else if (
+    lower.includes("insufficient") ||
+    lower.includes("not enough sol") ||
+    lower.includes("insufficient funds")
+  ) {
+    status = 400;
+    hint = "Fund the dev wallet with more SOL for create + buys + tip.";
+  } else if (lower.includes("no image found") || lower.includes("multiple images")) {
+    status = 400;
+    hint = "Upload exactly one image and retry.";
+  } else if (lower.includes("429") || lower.includes("rate limit")) {
+    status = 503;
+    hint = "RPC rate limit hit. Switch to a higher-tier RPC or wait and retry.";
+  } else if (lower.includes("network error") || lower.includes("econn")) {
+    status = 503;
+    hint = "RPC/network error. Check your RPC URL and connection.";
+  }
+
+  return { status, error: message, hint };
+};
+
 // Launch - calls buyBundle
 app.post("/api/launch", upload.single("image"), async (req, res) => {
   try {
@@ -647,6 +692,40 @@ app.post("/api/launch", upload.single("image"), async (req, res) => {
     
     const destPath = path.join(imgDir, image.originalname);
     fs.renameSync(image.path, destPath);
+
+    // Validate LUT configuration before attempting any on-chain lookups
+    try {
+      const keyInfoPath = path.join(process.cwd(), "src", "keyInfo.json");
+      if (!fs.existsSync(keyInfoPath)) {
+        return res.status(400).json({
+          error: "Missing src/keyInfo.json. Create wallets and a LUT first.",
+          hint: "Go to Settings → LUT → Create (or POST /api/lut/create).",
+        });
+      }
+      const poolInfo = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+      const lutStr = String(poolInfo?.addressLUT ?? "").trim();
+      if (!lutStr || lutStr === "11111111111111111111111111111111") {
+        return res.status(400).json({
+          error:
+            "Lookup Table (LUT) is not set yet (addressLUT is missing or still the placeholder 111111...).",
+          hint: "Create a LUT first: Settings → LUT → Create, or POST /api/lut/create.",
+        });
+      }
+    } catch (e: any) {
+      return res.status(400).json({
+        error: "Failed to read/validate src/keyInfo.json before launch.",
+        details: e?.message ?? String(e),
+      });
+    }
+
+    // Ensure pumpfun IDL file is present for Anchor program initialization
+    const idlPath = path.join(process.cwd(), "pumpfun-IDL.json");
+    if (!fs.existsSync(idlPath)) {
+      return res.status(400).json({
+        error: "Missing pumpfun-IDL.json in project root. Required for Pump.Fun program init.",
+        hint: "Place pumpfun-IDL.json in the project root or update the code to point to its location.",
+      });
+    }
 
     // Preflight: on devnet, Pump.Fun program may not exist (most setups are mainnet-only)
     // Give a clear error instead of hanging on prompts / background failures.
@@ -703,8 +782,10 @@ app.post("/api/launch", upload.single("image"), async (req, res) => {
     });
   } catch (error: any) {
     console.error("[API] Launch error:", error);
-    res.status(500).json({
-      error: error.message || "Launch failed",
+    const formatted = formatLaunchError(error);
+    res.status(formatted.status).json({
+      error: formatted.error || "Launch failed",
+      hint: formatted.hint,
       details: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
@@ -1066,6 +1147,113 @@ app.put("/api/config", async (req, res) => {
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Reset app - clears wallets, keyInfo, uploads, and images
+app.post("/api/reset", async (req, res) => {
+  try {
+    const { keepMainWallet = true } = req.body || {};
+    const projectRoot = process.cwd();
+    const keypairsDir = path.join(projectRoot, "src", "keypairs");
+    const keyInfoPath = path.join(projectRoot, "src", "keyInfo.json");
+    const uploadsDir = path.join(projectRoot, "uploads");
+    const imgDir = path.join(projectRoot, "img");
+    
+    const resetActions: string[] = [];
+    
+    // Clear sub-wallets (keep main-wallet.json if requested)
+    if (fs.existsSync(keypairsDir)) {
+      const existingFiles = fs.readdirSync(keypairsDir);
+      const filesToDelete = existingFiles.filter(file => {
+        if (file.startsWith('keypair') && file.endsWith('.json')) {
+          return true;
+        }
+        if (keepMainWallet && (file === 'main-wallet.json' || file === 'wallet.json')) {
+          return false;
+        }
+        return file.endsWith('.json');
+      });
+      
+      filesToDelete.forEach(file => {
+        fs.unlinkSync(path.join(keypairsDir, file));
+      });
+      
+      if (filesToDelete.length > 0) {
+        resetActions.push(`Deleted ${filesToDelete.length} wallet file(s)`);
+      }
+    }
+    
+    // Reset keyInfo.json to minimal structure
+    const minimalKeyInfo: any = {
+      numOfWallets: 0
+    };
+    
+    // Try to preserve network/LUT if they exist, but reset wallet data
+    if (fs.existsSync(keyInfoPath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+        if (existing.addressLUT) {
+          minimalKeyInfo.addressLUT = existing.addressLUT;
+        }
+        if (existing.network) {
+          minimalKeyInfo.network = existing.network;
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+    }
+    
+    fs.writeFileSync(keyInfoPath, JSON.stringify(minimalKeyInfo, null, 2));
+    resetActions.push("Reset keyInfo.json");
+    
+    // Clear uploads directory
+    if (fs.existsSync(uploadsDir)) {
+      const uploadFiles = fs.readdirSync(uploadsDir);
+      uploadFiles.forEach(file => {
+        fs.unlinkSync(path.join(uploadsDir, file));
+      });
+      if (uploadFiles.length > 0) {
+        resetActions.push(`Cleared ${uploadFiles.length} file(s) from uploads/`);
+      }
+    }
+    
+    // Clear img directory (keep default image if it exists)
+    if (fs.existsSync(imgDir)) {
+      const imgFiles = fs.readdirSync(imgDir);
+      imgFiles.forEach(file => {
+        // Don't delete if it's a specific file name you want to keep
+        if (file !== 'default.png' && file !== 'default.jpg' && file !== 'default.jpeg') {
+          fs.unlinkSync(path.join(imgDir, file));
+        }
+      });
+      const deleted = imgFiles.filter(f => f !== 'default.png' && f !== 'default.jpg' && f !== 'default.jpeg').length;
+      if (deleted > 0) {
+        resetActions.push(`Cleared ${deleted} image(s) from img/`);
+      }
+    }
+    
+    // Clear price cache
+    Object.keys(priceCache).forEach(key => delete priceCache[key]);
+    resetActions.push("Cleared price cache");
+    
+    // Clear connection cache
+    invalidateConnectionCache();
+    resetActions.push("Cleared connection cache");
+    
+    res.json({
+      success: true,
+      message: "App reset completed",
+      actions: resetActions,
+      keptMainWallet: keepMainWallet
+    });
+  } catch (error: any) {
+    console.error(`[API] Reset error (network: ${getNetworkMode()}):`, error);
+    res.status(500).json({
+      error: error.message || "Failed to reset app",
+      network: getNetworkMode(),
+      details: process.env.NODE_ENV === "development" ? error.stack : undefined
+    });
   }
 });
 
