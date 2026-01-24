@@ -100,11 +100,21 @@ export const createWallets = async (count: number) => {
   }, 3, 1000);
 };
 
-export const fundWallets = async (amountPerWallet?: number) => {
+export const fundWallets = async (options?: {
+  amountPerWallet?: number;
+  devWalletAmount?: number;
+  amountPerOtherWallet?: number;
+}) => {
   try {
     const body: any = {};
-    if (amountPerWallet !== undefined) {
-      body.amountPerWallet = amountPerWallet;
+    if (options?.amountPerWallet !== undefined) {
+      body.amountPerWallet = options.amountPerWallet;
+    }
+    if (options?.devWalletAmount !== undefined) {
+      body.devWalletAmount = options.devWalletAmount;
+    }
+    if (options?.amountPerOtherWallet !== undefined) {
+      body.amountPerOtherWallet = options.amountPerOtherWallet;
     }
     const response = await api.post("/wallets/fund", body);
     return response.data;
@@ -176,6 +186,15 @@ export const generateBuyAmounts = async (data: {
   };
 };
 
+export const setBuyAmounts = async (amounts: Record<string, number | string>) => {
+  const response = await api.post("/wallets/buy-amounts/set", { amounts });
+  return response.data as {
+    success: boolean;
+    walletsCount: number;
+    updated: Record<string, { solAmount: string }>;
+  };
+};
+
 export const getMintBalances = async (mint: string) => {
   const response = await api.get("/tokens/balances", { params: { mint } });
   return response.data as {
@@ -198,6 +217,16 @@ export const getMainWallet = async () => {
     const response = await api.get("/wallets/main");
     return response.data;
   });
+};
+
+export const getMint = async () => {
+  const response = await api.get("/mint");
+  return response.data as { success: boolean; mint: string | null };
+};
+
+export const generateMint = async (force: boolean = false) => {
+  const response = await api.post("/mint/generate", { force });
+  return response.data as { success: boolean; mint: string; reused?: boolean };
 };
 
 export const createMainWallet = async () => {
@@ -225,8 +254,41 @@ export const launchToken = async (data: {
   website?: string;
   tiktok?: string;
   youtube?: string;
-  image: File;
+  image?: File;
   jitoTip: number;
+  metadataUri?: string;
+}) => {
+  const formData = new FormData();
+  formData.append("name", data.name);
+  formData.append("symbol", data.symbol);
+  formData.append("description", data.description);
+  if (data.twitter) formData.append("twitter", data.twitter);
+  if (data.telegram) formData.append("telegram", data.telegram);
+  if (data.website) formData.append("website", data.website);
+  if (data.tiktok) formData.append("tiktok", data.tiktok);
+  if (data.youtube) formData.append("youtube", data.youtube);
+  if (data.metadataUri) formData.append("metadataUri", data.metadataUri);
+  if (data.image) formData.append("image", data.image);
+  formData.append("jitoTip", data.jitoTip.toString());
+
+  const response = await api.post("/launch", formData, {
+    headers: {
+      "Content-Type": "multipart/form-data",
+    },
+  });
+  return response.data;
+};
+
+export const uploadMetadata = async (data: {
+  name: string;
+  symbol: string;
+  description: string;
+  twitter?: string;
+  telegram?: string;
+  website?: string;
+  tiktok?: string;
+  youtube?: string;
+  image: File;
 }) => {
   const formData = new FormData();
   formData.append("name", data.name);
@@ -238,9 +300,8 @@ export const launchToken = async (data: {
   if (data.tiktok) formData.append("tiktok", data.tiktok);
   if (data.youtube) formData.append("youtube", data.youtube);
   formData.append("image", data.image);
-  formData.append("jitoTip", data.jitoTip.toString());
 
-  const response = await api.post("/launch", formData, {
+  const response = await api.post("/metadata/upload", formData, {
     headers: {
       "Content-Type": "multipart/form-data",
     },

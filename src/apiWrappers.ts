@@ -36,7 +36,8 @@ export async function buyBundleWithParams(params: {
   tiktok?: string;
   youtube?: string;
   jitoTip: number;
-  imagePath: string;
+  imagePath?: string;
+  metadataUri?: string;
   dryRun?: boolean;
 }) {
   const { buyBundleWithParams: buyBundle } = await import("./jitoPool");
@@ -50,6 +51,7 @@ export async function buyBundleWithParams(params: {
     tiktok: params.tiktok,
     youtube: params.youtube,
     jitoTip: params.jitoTip,
+    metadataUri: params.metadataUri,
   }, params.imagePath, { dryRun: params.dryRun });
 }
 
@@ -679,14 +681,28 @@ function makeSwapForSell(poolKeys: any, wSolATA: PublicKey, TokenATA: PublicKey,
 }
 
 // Wrapper for generateATAandSOL with parameters
-export async function fundWalletsWithParams(jitoTip: number = 0.01) {
+export async function fundWalletsWithParams(
+  jitoTip: number = 0.01,
+  options?: {
+    devWalletAmount?: number;
+    amountPerOtherWallet?: number;
+  }
+) {
   try {
     if (jitoTip < 0 || isNaN(jitoTip)) {
       throw new Error(`Invalid jitoTip parameter: ${jitoTip}. Must be a non-negative number.`);
     }
 
+    if (options?.devWalletAmount !== undefined && (isNaN(options.devWalletAmount) || options.devWalletAmount < 0)) {
+      throw new Error(`Invalid devWalletAmount: ${options.devWalletAmount}. Must be a non-negative number.`);
+    }
+
+    if (options?.amountPerOtherWallet !== undefined && (isNaN(options.amountPerOtherWallet) || options.amountPerOtherWallet < 0)) {
+      throw new Error(`Invalid amountPerOtherWallet: ${options.amountPerOtherWallet}. Must be a non-negative number.`);
+    }
+
     const { generateATAandSOL } = await import("./senderUI");
-    return await generateATAandSOL(jitoTip);
+    return await generateATAandSOL(jitoTip, options);
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown error';
     console.error(`[fundWalletsWithParams] Error:`, errorMsg);

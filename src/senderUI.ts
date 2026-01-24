@@ -25,7 +25,14 @@ interface Buy {
 	percentSupply: number;
 }
 
-async function generateSOLTransferForKeypairs(tipAmt: number, steps: number = 24): Promise<TransactionInstruction[]> {
+async function generateSOLTransferForKeypairs(
+	tipAmt: number, 
+	steps: number = 24,
+	options?: {
+		devWalletAmount?: number;
+		amountPerOtherWallet?: number;
+	}
+): Promise<TransactionInstruction[]> {
 	const keypairs: Keypair[] = loadKeypairs();
 	const ixs: TransactionInstruction[] = [];
 
@@ -39,41 +46,54 @@ async function generateSOLTransferForKeypairs(tipAmt: number, steps: number = 24
 	}
 
 	// Dev wallet send first
-	if (!existingData[wallet.publicKey.toString()] || !existingData[wallet.publicKey.toString()].solAmount) {
-		throw new Error(`Missing solAmount for dev wallet (${wallet.publicKey.toString()}). Please configure buy amounts first or provide amountPerWallet parameter.`);
-	}
-
-		const solAmount = parseFloat(existingData[wallet.publicKey.toString()].solAmount);
-
-	if (isNaN(solAmount) || solAmount <= 0) {
-		throw new Error(`Invalid solAmount for dev wallet: ${existingData[wallet.publicKey.toString()].solAmount}. Must be a positive number.`);
+	let devWalletSolAmount: number;
+	if (options?.devWalletAmount !== undefined) {
+		// Use provided devWalletAmount
+		devWalletSolAmount = options.devWalletAmount;
+		console.log(`[Funding] Using provided devWalletAmount: ${devWalletSolAmount} SOL`);
+	} else if (existingData[wallet.publicKey.toString()]?.solAmount) {
+		// Use existing solAmount from keyInfo.json
+		devWalletSolAmount = parseFloat(existingData[wallet.publicKey.toString()].solAmount);
+		if (isNaN(devWalletSolAmount) || devWalletSolAmount <= 0) {
+			throw new Error(`Invalid solAmount for dev wallet: ${existingData[wallet.publicKey.toString()].solAmount}. Must be a positive number.`);
+		}
+		console.log(`[Funding] Using solAmount from keyInfo.json for dev wallet: ${devWalletSolAmount} SOL`);
+	} else {
+		throw new Error(`Missing solAmount for dev wallet (${wallet.publicKey.toString()}). Please configure buy amounts first, provide amountPerWallet parameter, or provide devWalletAmount.`);
 	}
 
 	ixs.push(
 		SystemProgram.transfer({
 			fromPubkey: payer.publicKey,
 			toPubkey: wallet.publicKey,
-			lamports: Math.floor((solAmount * 1.015 + 0.0025) * LAMPORTS_PER_SOL),
+			lamports: Math.floor((devWalletSolAmount * 1.015 + 0.0025) * LAMPORTS_PER_SOL),
 		})
 	);
-	console.log(`Prepared transfer of ${(solAmount * 1.015 + 0.0025).toFixed(3)} SOL to dev wallet (${wallet.publicKey.toString()})`);
+	console.log(`Prepared transfer of ${(devWalletSolAmount * 1.015 + 0.0025).toFixed(3)} SOL to dev wallet (${wallet.publicKey.toString()})`);
 
 	// Loop through the keypairs and process each one
 	let skippedWallets: string[] = [];
+	const useUniformAmount = options?.amountPerOtherWallet !== undefined;
+	
 	for (let i = 0; i < Math.min(steps, keypairs.length); i++) {
 		const keypair = keypairs[i];
 		const keypairPubkeyStr = keypair.publicKey.toString();
 
-		if (!existingData[keypairPubkeyStr] || !existingData[keypairPubkeyStr].solAmount) {
+		let solAmount: number;
+		if (useUniformAmount) {
+			// Use provided amountPerOtherWallet for all other wallets
+			solAmount = options.amountPerOtherWallet!;
+			console.log(`[Funding] Using provided amountPerOtherWallet: ${solAmount} SOL for wallet ${i + 1}`);
+		} else if (existingData[keypairPubkeyStr]?.solAmount) {
+			// Use existing solAmount from keyInfo.json
+			solAmount = parseFloat(existingData[keypairPubkeyStr].solAmount);
+			if (isNaN(solAmount) || solAmount <= 0) {
+				console.warn(`Invalid solAmount for wallet ${i + 1} (${keypairPubkeyStr}): ${existingData[keypairPubkeyStr].solAmount}, skipping.`);
+				skippedWallets.push(keypairPubkeyStr);
+				continue;
+			}
+		} else {
 			console.warn(`Missing solAmount for wallet ${i + 1} (${keypairPubkeyStr}), skipping.`);
-			skippedWallets.push(keypairPubkeyStr);
-			continue;
-		}
-
-		const solAmount = parseFloat(existingData[keypairPubkeyStr].solAmount);
-
-		if (isNaN(solAmount) || solAmount <= 0) {
-			console.warn(`Invalid solAmount for wallet ${i + 1} (${keypairPubkeyStr}): ${existingData[keypairPubkeyStr].solAmount}, skipping.`);
 			skippedWallets.push(keypairPubkeyStr);
 			continue;
 		}
@@ -198,7 +218,13 @@ async function processInstructionsSOL(ixs: TransactionInstruction[], blockhash: 
 }
 
 
-export async function generateATAandSOL(jitoTipParam?: number) {
+export async function generateATAandSOL(
+	jitoTipParam?: number,
+	options?: {
+		devWalletAmount?: number;
+		amountPerOtherWallet?: number;
+	}
+) {
 	try {
 		const jitoTip = jitoTipParam !== undefined ? jitoTipParam : await MenuUI.promptJitoTip();
 		
@@ -209,12 +235,18 @@ export async function generateATAandSOL(jitoTipParam?: number) {
 		const jitoTipAmt = jitoTip * LAMPORTS_PER_SOL;
 
 		console.log(`[Funding] Starting wallet funding process with jitoTip: ${jitoTip} SOL`);
+		if (options?.devWalletAmount !== undefined) {
+			console.log(`[Funding] Dev wallet amount: ${options.devWalletAmount} SOL`);
+		}
+		if (options?.amountPerOtherWallet !== undefined) {
+			console.log(`[Funding] Amount per other wallet: ${options.amountPerOtherWallet} SOL`);
+		}
 		
 		const { blockhash } = await getConnection().getLatestBlockhash();
 		const sendTxns: VersionedTransaction[] = [];
 
 		console.log(`[Funding] Generating SOL transfer instructions...`);
-		const solIxs = await generateSOLTransferForKeypairs(jitoTipAmt);
+		const solIxs = await generateSOLTransferForKeypairs(jitoTipAmt, 24, options);
 		
 		if (solIxs.length === 0) {
 			throw new Error("No transfer instructions generated. Check wallet configuration and solAmount data.");

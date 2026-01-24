@@ -16,6 +16,9 @@ export default function WalletsPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [showFundModal, setShowFundModal] = useState(false);
   const [fundAmount, setFundAmount] = useState("0.1");
+  const [devWalletAmount, setDevWalletAmount] = useState("");
+  const [amountPerOtherWallet, setAmountPerOtherWallet] = useState("");
+  const [useSeparateAmounts, setUseSeparateAmounts] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [walletCount, setWalletCount] = useState("12");
   const [showReclaimModal, setShowReclaimModal] = useState(false);
@@ -132,6 +135,11 @@ export default function WalletsPage() {
   };
 
   const handleFundWallets = () => {
+    // Reset form state
+    setFundAmount("0.1");
+    setDevWalletAmount("");
+    setAmountPerOtherWallet("");
+    setUseSeparateAmounts(false);
     setShowFundModal(true);
   };
 
@@ -166,15 +174,55 @@ export default function WalletsPage() {
     setShowFundModal(false);
     setFunding(true);
     try {
-      const amountPerWallet = fundAmount.trim() ? parseFloat(fundAmount.trim()) : undefined;
-      
-      if (amountPerWallet !== undefined && (isNaN(amountPerWallet) || amountPerWallet <= 0)) {
-        alert("Please enter a valid positive number for SOL amount.");
-        setFunding(false);
-        return;
+      const options: {
+        amountPerWallet?: number;
+        devWalletAmount?: number;
+        amountPerOtherWallet?: number;
+      } = {};
+
+      if (useSeparateAmounts) {
+        // Use separate amounts for dev wallet and other wallets
+        if (devWalletAmount.trim()) {
+          const devAmount = parseFloat(devWalletAmount.trim());
+          if (isNaN(devAmount) || devAmount < 0) {
+            alert("Please enter a valid non-negative number for dev wallet amount.");
+            setFunding(false);
+            return;
+          }
+          options.devWalletAmount = devAmount;
+        }
+        
+        if (amountPerOtherWallet.trim()) {
+          const otherAmount = parseFloat(amountPerOtherWallet.trim());
+          if (isNaN(otherAmount) || otherAmount < 0) {
+            alert("Please enter a valid non-negative number for other wallets amount.");
+            setFunding(false);
+            return;
+          }
+          options.amountPerOtherWallet = otherAmount;
+        }
+
+        if (!options.devWalletAmount && !options.amountPerOtherWallet) {
+          alert("Please enter at least one amount (dev wallet or other wallets).");
+          setFunding(false);
+          return;
+        }
+      } else {
+        // Use legacy amountPerWallet for all wallets
+        const amountPerWallet = fundAmount.trim() ? parseFloat(fundAmount.trim()) : undefined;
+        
+        if (amountPerWallet !== undefined && (isNaN(amountPerWallet) || amountPerWallet <= 0)) {
+          alert("Please enter a valid positive number for SOL amount.");
+          setFunding(false);
+          return;
+        }
+        
+        if (amountPerWallet !== undefined) {
+          options.amountPerWallet = amountPerWallet;
+        }
       }
       
-      await fundWallets(amountPerWallet);
+      await fundWallets(Object.keys(options).length > 0 ? options : undefined);
       alert("Funding wallets initiated! This may take a few moments.");
       await loadData();
     } catch (error: any) {
@@ -504,24 +552,77 @@ export default function WalletsPage() {
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-2">
-                  SOL Amount Per Wallet
-                </label>
+              <div className="flex items-center gap-2 mb-4">
                 <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  value={fundAmount}
-                  onChange={(e) => setFundAmount(e.target.value)}
-                  className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
-                  placeholder="0.1"
-                  autoFocus
+                  type="checkbox"
+                  id="useSeparateAmounts"
+                  checked={useSeparateAmounts}
+                  onChange={(e) => setUseSeparateAmounts(e.target.checked)}
+                  className="w-4 h-4 rounded border-[#00ff41]/30 bg-[#0f0f1a] text-[#00ff41] focus:ring-[#00ff41]"
                 />
-                <p className="text-xs text-gray-500 mt-2">
-                  Enter the amount of SOL to send to each wallet. Leave empty to use simulated buy amounts if configured.
-                </p>
+                <label htmlFor="useSeparateAmounts" className="text-sm text-gray-300 cursor-pointer">
+                  Use separate amounts for dev wallet and other wallets
+                </label>
               </div>
+
+              {useSeparateAmounts ? (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Dev Wallet Amount (SOL)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={devWalletAmount}
+                      onChange={(e) => setDevWalletAmount(e.target.value)}
+                      className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                      placeholder="0.5"
+                      autoFocus
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      Amount to send to dev wallet. Leave empty to use existing configuration.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      Amount Per Other Wallet (SOL)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={amountPerOtherWallet}
+                      onChange={(e) => setAmountPerOtherWallet(e.target.value)}
+                      className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                      placeholder="0.1"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      Amount to send to each sub-wallet. Leave empty to use existing configuration.
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    SOL Amount Per Wallet
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={fundAmount}
+                    onChange={(e) => setFundAmount(e.target.value)}
+                    className="w-full px-5 py-3 bg-[#0f0f1a] border border-[#00ff41]/20 rounded-lg text-white focus:outline-none focus:border-[#00ff41] focus:glow-green"
+                    placeholder="0.1"
+                    autoFocus
+                  />
+                  <p className="text-xs text-gray-500 mt-2">
+                    Enter the amount of SOL to send to each wallet (including dev wallet). Leave empty to use simulated buy amounts if configured.
+                  </p>
+                </div>
+              )}
               <div className="flex gap-3 pt-2">
                 <Button
                   type="button"

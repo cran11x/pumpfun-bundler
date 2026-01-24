@@ -40,6 +40,7 @@ export interface TokenInfo {
 	tiktok?: string;
 	youtube?: string;
 	jitoTip: number;
+	metadataUri?: string;
 }
 
 export async function buyBundleWithParams(
@@ -159,77 +160,93 @@ export async function buyBundleWithParams(
 	}
 
 	// -------- step 2: build pool init + dev snipe --------
-	const imgPath = imagePath || "./img";
-	const files = await fs.promises.readdir(imgPath);
-	if (files.length == 0) {
-		console.log("No image found in the img folder");
-		throw new Error("No image found in the img folder");
-	}
-	if (files.length > 1) {
-		console.log("Multiple images found in the img folder, please only keep one image");
-		throw new Error("Multiple images found in the img folder");
-	}
-	const data: Buffer = fs.readFileSync(`${imgPath}/${files[0]}`);
-
-	let formData = new FormData();
-	if (data) {
-		formData.append("file", new Blob([new Uint8Array(data)], { type: "image/jpeg" }));
-	} else {
-		console.log("No image found");
-		throw new Error("No image found");
-	}
-
-	formData.append("name", name);
-	formData.append("symbol", symbol);
-	formData.append("description", description);
-	formData.append("twitter", twitter);
-	formData.append("telegram", telegram);
-	formData.append("website", website);
-	formData.append("tiktok", tiktok);
-	formData.append("youtube", youtube);
-	formData.append("showName", "true");
-
-	let metadata_uri;
-	try {
-		console.log("Uploading metadata to IPFS...");
-		const response = await axios.post("https://pump.fun/api/ipfs", formData, {
-			headers: {
-				"Content-Type": "multipart/form-data",
-			},
-		});
-		metadata_uri = response.data.metadataUri;
-		console.log("Metadata URI: ", metadata_uri);
-	} catch (error: any) {
-		console.error("Error uploading metadata to Pump.Fun IPFS:", error.message);
-		if (error.response) {
-			console.error("Response status:", error.response.status);
-			console.error("Response data:", error.response.data);
+	let metadata_uri = tokenInfo.metadataUri?.trim();
+	if (!metadata_uri) {
+		const imgPath = imagePath || "./img";
+		const files = await fs.promises.readdir(imgPath);
+		if (files.length == 0) {
+			console.log("No image found in the img folder");
+			throw new Error("No image found in the img folder");
 		}
-		throw new Error(`Metadata upload failed: ${error.message}`);
+		if (files.length > 1) {
+			console.log("Multiple images found in the img folder, please only keep one image");
+			throw new Error("Multiple images found in the img folder");
+		}
+		const data: Buffer = fs.readFileSync(`${imgPath}/${files[0]}`);
+
+		const formData = new FormData();
+		if (data) {
+			formData.append("file", new Blob([new Uint8Array(data)], { type: "image/jpeg" }));
+		} else {
+			console.log("No image found");
+			throw new Error("No image found");
+		}
+
+		formData.append("name", name);
+		formData.append("symbol", symbol);
+		formData.append("description", description);
+		formData.append("twitter", twitter);
+		formData.append("telegram", telegram);
+		formData.append("website", website);
+		formData.append("tiktok", tiktok);
+		formData.append("youtube", youtube);
+		formData.append("showName", "true");
+
+		try {
+			console.log("Uploading metadata to IPFS...");
+			const response = await axios.post("https://pump.fun/api/ipfs", formData, {
+				headers: {
+					"Content-Type": "multipart/form-data",
+				},
+			});
+			metadata_uri = response.data.metadataUri;
+			console.log("Metadata URI: ", metadata_uri);
+		} catch (error: any) {
+			console.error("Error uploading metadata to Pump.Fun IPFS:", error.message);
+			if (error.response) {
+				console.error("Response status:", error.response.status);
+				console.error("Response data:", error.response.data);
+			}
+			throw new Error(`Metadata upload failed: ${error.message}`);
+		}
+	} else {
+		console.log("Using pre-uploaded metadata URI.");
 	}
 
-	// FORENSIC SOLUTION: Generate CRYPTOGRAPHICALLY UNIQUE mint for EVERY attempt
-	const mintKp = Keypair.generate();
-	console.log(`🔑 FRESH Mint Generated: ${mintKp.publicKey.toBase58()}`);
+	// Use pre-generated mint if present, otherwise generate a fresh one
+	let mintKp: Keypair;
+	if (keyInfo.mintPk) {
+		try {
+			mintKp = Keypair.fromSecretKey(bs58.decode(String(keyInfo.mintPk)));
+			if (!keyInfo.mint || keyInfo.mint !== mintKp.publicKey.toString()) {
+				keyInfo.mint = mintKp.publicKey.toString();
+				fs.writeFileSync(keyInfoPath, JSON.stringify(keyInfo, null, 2));
+			}
+			console.log(`🔑 Using pre-generated mint: ${mintKp.publicKey.toBase58()}`);
+		} catch (error) {
+			throw new Error("Invalid mintPk in keyInfo.json. Please regenerate mint.");
+		}
+	} else {
+		mintKp = Keypair.generate();
+		console.log(`🔑 FRESH Mint Generated: ${mintKp.publicKey.toBase58()}`);
 
-	// --- FIX START: Save new mint to keyInfo.json ---
-	keyInfo.mint = mintKp.publicKey.toString();
-	keyInfo.mintPk = bs58.encode(mintKp.secretKey);
-	try {
-		fs.writeFileSync(keyInfoPath, JSON.stringify(keyInfo, null, 2));
-		console.log(`💾 Updated keyInfo.json with new mint: ${mintKp.publicKey.toBase58()}`);
-	} catch (error) {
-		console.error("❌ Failed to save new mint to keyInfo.json:", error);
+		// Save new mint to keyInfo.json
+		keyInfo.mint = mintKp.publicKey.toString();
+		keyInfo.mintPk = bs58.encode(mintKp.secretKey);
+		try {
+			fs.writeFileSync(keyInfoPath, JSON.stringify(keyInfo, null, 2));
+			console.log(`💾 Updated keyInfo.json with new mint: ${mintKp.publicKey.toBase58()}`);
+		} catch (error) {
+			console.error("❌ Failed to save new mint to keyInfo.json:", error);
+		}
 	}
-	// --- FIX END ---
 	
 	// Pre-flight state verification (Idempotency Check)
 	const accountInfo = await connection.getAccountInfo(mintKp.publicKey);
 	if (accountInfo !== null) {
-		console.error("🚨 CRITICAL: Mint already exists on-chain! This should be impossible with random generation.");
-		console.error("🔄 Regenerating new mint keypair...");
-		// In production, you might want to retry with a new keypair here
-		throw new Error("Mint collision detected - extremely rare event!");
+		throw new Error(
+			"Mint already exists on-chain. Generate a new mint first (Settings/Launch -> Generate Mint)."
+		);
 	}
 	
 	console.log(`✅ Verified fresh mint keypair - ready for bundle creation`);

@@ -4,6 +4,7 @@ import multer from "multer";
 import path from "path";
 import * as dotenv from "dotenv";
 import axios from "axios";
+import bs58 from "bs58";
 import { healthCheck } from "../src/utils/healthCheck";
 import { validatePreLaunch } from "../src/utils/validations";
 import { loadKeypairs } from "../src/createKeys";
@@ -430,9 +431,136 @@ app.post("/api/wallets/buy-amounts/generate", async (req, res) => {
   }
 });
 
+// Mint helpers (pre-generate mint before launch)
+app.get("/api/mint", async (req, res) => {
+  try {
+    const keyInfoPath = path.join(process.cwd(), "src", "keyInfo.json");
+    if (!fs.existsSync(keyInfoPath)) {
+      return res.json({ success: true, mint: null });
+    }
+    const keyInfo = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+    if (keyInfo?.mintPk) {
+      try {
+        const kp = Keypair.fromSecretKey(bs58.decode(String(keyInfo.mintPk)));
+        const mint = kp.publicKey.toString();
+        if (keyInfo.mint !== mint) {
+          keyInfo.mint = mint;
+          fs.writeFileSync(keyInfoPath, JSON.stringify(keyInfo, null, 2));
+        }
+        return res.json({ success: true, mint });
+      } catch {
+        // fall through
+      }
+    }
+    return res.json({ success: true, mint: keyInfo?.mint ?? null });
+  } catch (error: any) {
+    console.error("[API] mint get error:", error);
+    res.status(500).json({ error: error?.message ?? "Failed to get mint" });
+  }
+});
+
+app.post("/api/mint/generate", async (req, res) => {
+  try {
+    const { force = false } = req.body ?? {};
+    const keyInfoPath = path.join(process.cwd(), "src", "keyInfo.json");
+    let keyInfo: any = {};
+    if (fs.existsSync(keyInfoPath)) {
+      keyInfo = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+    }
+
+    if (!force && (keyInfo?.mintPk || keyInfo?.mint)) {
+      return res.json({ success: true, mint: keyInfo?.mint ?? null, reused: true });
+    }
+
+    const conn = getConnection();
+    let mintKp: Keypair | null = null;
+    for (let i = 0; i < 5; i++) {
+      const candidate = Keypair.generate();
+      const exists = await conn.getAccountInfo(candidate.publicKey);
+      if (!exists) {
+        mintKp = candidate;
+        break;
+      }
+    }
+    if (!mintKp) {
+      return res.status(500).json({ error: "Failed to generate a unique mint. Please retry." });
+    }
+
+    keyInfo.mint = mintKp.publicKey.toString();
+    keyInfo.mintPk = bs58.encode(mintKp.secretKey);
+    fs.writeFileSync(keyInfoPath, JSON.stringify(keyInfo, null, 2));
+
+    res.json({ success: true, mint: keyInfo.mint, reused: false });
+  } catch (error: any) {
+    console.error("[API] mint generate error:", error);
+    res.status(500).json({ error: error?.message ?? "Failed to generate mint" });
+  }
+});
+
+// Manually set per-wallet buy amounts and store into keyInfo.json
+app.post("/api/wallets/buy-amounts/set", async (req, res) => {
+  try {
+    const { amounts } = req.body ?? {};
+    if (!amounts || typeof amounts !== "object") {
+      return res.status(400).json({ error: "Invalid amounts payload. Expected object of { pubkey: solAmount }." });
+    }
+
+    const subWallets = loadKeypairs();
+    const allowed = new Set<string>([
+      wallet.publicKey.toString(),
+      ...subWallets.map((kp) => kp.publicKey.toString()),
+    ]);
+
+    const keyInfoPath = path.join(process.cwd(), "src", "keyInfo.json");
+    let poolInfo: any = {};
+    if (fs.existsSync(keyInfoPath)) {
+      poolInfo = JSON.parse(fs.readFileSync(keyInfoPath, "utf-8"));
+    }
+
+    const updated: Record<string, { solAmount: string }> = {};
+
+    for (const [pk, rawAmount] of Object.entries(amounts as Record<string, any>)) {
+      if (!allowed.has(pk)) {
+        return res.status(400).json({ error: `Unknown wallet pubkey: ${pk}` });
+      }
+      const amountNum = Number(rawAmount);
+      if (!Number.isFinite(amountNum) || amountNum <= 0) {
+        return res.status(400).json({ error: `Invalid solAmount for ${pk}: ${rawAmount}` });
+      }
+      const solStr = amountNum.toFixed(6);
+      poolInfo[pk] = {
+        solAmount: solStr,
+        tokenAmount: poolInfo[pk]?.tokenAmount ?? "0",
+        percentSupply: poolInfo[pk]?.percentSupply ?? 0,
+      };
+      updated[pk] = { solAmount: solStr };
+    }
+
+    if (Object.keys(updated).length === 0) {
+      return res.status(400).json({ error: "No valid amounts provided." });
+    }
+
+    fs.writeFileSync(keyInfoPath, JSON.stringify(poolInfo, null, 2));
+
+    res.json({
+      success: true,
+      walletsCount: Object.keys(updated).length,
+      updated,
+    });
+  } catch (error: any) {
+    console.error("[API] buy-amounts/set error:", error);
+    res.status(500).json({ error: error?.message ?? "Failed to set buy amounts" });
+  }
+});
+
 app.post("/api/wallets/fund", async (req, res) => {
   try {
-    const { jitoTip = 0.01, amountPerWallet } = req.body || {};
+    const { 
+      jitoTip = 0.01, 
+      amountPerWallet,
+      devWalletAmount,
+      amountPerOtherWallet
+    } = req.body || {};
     const currentNetwork = getNetworkMode();
     
     // Log network mode for debugging
@@ -471,17 +599,37 @@ app.post("/api/wallets/fund", async (req, res) => {
     
     console.log(`[API] LUT verified: ${poolInfo.addressLUT}`);
 
-    // Check if solAmount data exists OR if amountPerWallet is provided
+    // Validate new parameters if provided
+    if (devWalletAmount !== undefined) {
+      const amount = parseFloat(devWalletAmount);
+      if (isNaN(amount) || amount < 0) {
+        return res.status(400).json({ 
+          error: "Invalid devWalletAmount. Must be a non-negative number." 
+        });
+      }
+    }
+
+    if (amountPerOtherWallet !== undefined) {
+      const amount = parseFloat(amountPerOtherWallet);
+      if (isNaN(amount) || amount < 0) {
+        return res.status(400).json({ 
+          error: "Invalid amountPerOtherWallet. Must be a non-negative number." 
+        });
+      }
+    }
+
+    // Check if we have enough information to fund
     const hasSolAmountData = poolInfo[wallet.publicKey.toString()]?.solAmount;
+    const hasDirectAmounts = devWalletAmount !== undefined || amountPerOtherWallet !== undefined;
     
-    if (!hasSolAmountData && !amountPerWallet) {
+    if (!hasSolAmountData && !amountPerWallet && !hasDirectAmounts) {
       return res.status(400).json({ 
-        error: `No buy amounts configured. Please either:\n1. Simulate buy amounts first (Advanced Setup > Simulate Buy Amounts), OR\n2. Provide 'amountPerWallet' parameter (e.g., 0.1 SOL per wallet)\n\nNetwork: ${currentNetwork}` 
+        error: `No funding amounts configured. Please either:\n1. Simulate buy amounts first (Advanced Setup > Simulate Buy Amounts), OR\n2. Provide 'amountPerWallet' parameter (e.g., 0.1 SOL per wallet), OR\n3. Provide 'devWalletAmount' and/or 'amountPerOtherWallet' parameters\n\nNetwork: ${currentNetwork}` 
       });
     }
     
-    // If amountPerWallet is provided, use it to create/update solAmount data for all wallets
-    if (amountPerWallet) {
+    // If amountPerWallet is provided (legacy mode), use it to create/update solAmount data for all wallets
+    if (amountPerWallet && !hasDirectAmounts) {
       const amount = parseFloat(amountPerWallet);
       if (isNaN(amount) || amount <= 0) {
         return res.status(400).json({ 
@@ -510,7 +658,7 @@ app.post("/api/wallets/fund", async (req, res) => {
       // Save to keyInfo.json
       fs.writeFileSync(keyInfoPath, JSON.stringify(poolInfo, null, 2));
       console.log(`[API] Created/updated solAmount entries for ${keypairs.length + 1} wallets with ${amount} SOL each`);
-    } else {
+    } else if (!hasDirectAmounts) {
       console.log(`[API] Using existing solAmount configuration from keyInfo.json`);
     }
 
@@ -521,7 +669,23 @@ app.post("/api/wallets/fund", async (req, res) => {
     
     // Calculate estimated needed amount
     let estimatedNeeded = 0;
-    if (hasSolAmountData) {
+    if (hasDirectAmounts) {
+      // Use direct amounts if provided
+      let totalNeeded = 0;
+      const devAmount = devWalletAmount !== undefined ? parseFloat(devWalletAmount) : 
+                       (poolInfo[wallet.publicKey.toString()]?.solAmount ? parseFloat(poolInfo[wallet.publicKey.toString()].solAmount) : 0);
+      const otherAmount = amountPerOtherWallet !== undefined ? parseFloat(amountPerOtherWallet) : 
+                         (keypairs.length > 0 && poolInfo[keypairs[0].publicKey.toString()]?.solAmount ? 
+                          parseFloat(poolInfo[keypairs[0].publicKey.toString()].solAmount) : 0);
+      
+      if (devAmount > 0) {
+        totalNeeded += devAmount * 1.015 + 0.0025;
+      }
+      if (otherAmount > 0) {
+        totalNeeded += otherAmount * (keypairs.length) * 1.015 + 0.0025 * keypairs.length;
+      }
+      estimatedNeeded = totalNeeded * 1.1; // +10% buffer
+    } else if (hasSolAmountData) {
       // Sum up all solAmount values from keyInfo.json
       let totalNeeded = 0;
       if (poolInfo[wallet.publicKey.toString()]?.solAmount) {
@@ -550,16 +714,41 @@ app.post("/api/wallets/fund", async (req, res) => {
     // Execute funding in background
     const { fundWalletsWithParams } = await import("../src/apiWrappers");
     
+    // Prepare funding options
+    const fundingOptions: {
+      devWalletAmount?: number;
+      amountPerOtherWallet?: number;
+    } = {};
+    
+    if (devWalletAmount !== undefined) {
+      fundingOptions.devWalletAmount = parseFloat(devWalletAmount);
+    }
+    if (amountPerOtherWallet !== undefined) {
+      fundingOptions.amountPerOtherWallet = parseFloat(amountPerOtherWallet);
+    }
+    
     // Note: Funding runs in background, errors are logged but don't block the response
-    fundWalletsWithParams(jitoTip).catch(err => {
+    fundWalletsWithParams(jitoTip, Object.keys(fundingOptions).length > 0 ? fundingOptions : undefined).catch(err => {
       console.error(`[API] Funding error (network: ${currentNetwork}):`, err instanceof Error ? err.message : err);
     });
     
     console.log(`[API] Funding initiated for ${keypairs.length + 1} wallet(s) on ${currentNetwork}`);
     
+    let message = `Funding wallets initiated with jitoTip: ${jitoTip} SOL`;
+    if (devWalletAmount !== undefined) {
+      message += `, dev wallet: ${devWalletAmount} SOL`;
+    }
+    if (amountPerOtherWallet !== undefined) {
+      message += `, other wallets: ${amountPerOtherWallet} SOL each`;
+    }
+    if (amountPerWallet && !hasDirectAmounts) {
+      message += ` (${amountPerWallet} SOL per wallet)`;
+    }
+    message += ` on ${currentNetwork}`;
+    
     res.json({ 
       success: true, 
-      message: `Funding wallets initiated with jitoTip: ${jitoTip} SOL${amountPerWallet ? ` (${amountPerWallet} SOL per wallet)` : ''} on ${currentNetwork}`,
+      message,
       network: currentNetwork,
       walletsCount: keypairs.length + 1
     });
@@ -664,11 +853,11 @@ const formatLaunchError = (error: any) => {
   return { status, error: message, hint };
 };
 
-// Launch - calls buyBundle
-app.post("/api/launch", upload.single("image"), async (req, res) => {
+// Pre-upload metadata to Pump.Fun IPFS (optional step before launch)
+app.post("/api/metadata/upload", upload.single("image"), async (req, res) => {
+  const image = req.file;
   try {
-    const { name, symbol, description, twitter, telegram, website, tiktok, youtube, jitoTip, dryRun } = req.body;
-    const image = req.file;
+    const { name, symbol, description, twitter, telegram, website, tiktok, youtube } = req.body;
 
     if (!image) {
       return res.status(400).json({ error: "Image is required" });
@@ -678,20 +867,90 @@ app.post("/api/launch", upload.single("image"), async (req, res) => {
       return res.status(400).json({ error: "Name, symbol, and description are required" });
     }
 
-    // Move image to img folder (clear old images first)
-    const imgDir = path.join(process.cwd(), "img");
-    if (!fs.existsSync(imgDir)) {
-      fs.mkdirSync(imgDir, { recursive: true });
-    }
-    
-    // Clear existing images
-    const existingFiles = fs.readdirSync(imgDir);
-    existingFiles.forEach(file => {
-      fs.unlinkSync(path.join(imgDir, file));
+    const data = await fs.promises.readFile(image.path);
+    const formData = new FormData();
+    formData.append("file", new Blob([new Uint8Array(data)], { type: image.mimetype || "image/jpeg" }));
+    formData.append("name", name);
+    formData.append("symbol", symbol);
+    formData.append("description", description);
+    formData.append("twitter", twitter || "");
+    formData.append("telegram", telegram || "");
+    formData.append("website", website || "");
+    formData.append("tiktok", tiktok || "");
+    formData.append("youtube", youtube || "");
+    formData.append("showName", "true");
+
+    const response = await axios.post("https://pump.fun/api/ipfs", formData, {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
     });
-    
-    const destPath = path.join(imgDir, image.originalname);
-    fs.renameSync(image.path, destPath);
+
+    res.json({
+      success: true,
+      metadataUri: response.data?.metadataUri,
+    });
+  } catch (error: any) {
+    console.error("[API] Metadata upload error:", error);
+    res.status(500).json({
+      error: error?.message ?? "Metadata upload failed",
+      details: process.env.NODE_ENV === "development" ? error?.stack : undefined,
+    });
+  } finally {
+    if (image?.path) {
+      try {
+        await fs.promises.unlink(image.path);
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+});
+
+// Launch - calls buyBundle
+app.post("/api/launch", upload.single("image"), async (req, res) => {
+  try {
+    const { name, symbol, description, twitter, telegram, website, tiktok, youtube, jitoTip, dryRun, metadataUri } = req.body;
+    const image = req.file;
+    const normalizedMetadataUri =
+      typeof metadataUri === "string" && metadataUri.trim().length ? metadataUri.trim() : undefined;
+
+    if (!image && !normalizedMetadataUri) {
+      return res.status(400).json({ error: "Image or metadataUri is required" });
+    }
+
+    if (!name || !symbol || !description) {
+      return res.status(400).json({ error: "Name, symbol, and description are required" });
+    }
+
+    // Move image to img folder (clear old images first) when metadata isn't pre-uploaded
+    let imgDir: string | undefined;
+    if (!normalizedMetadataUri) {
+      if (!image) {
+        return res.status(400).json({ error: "Image is required when metadataUri is not provided" });
+      }
+      const imgDirLocal = path.join(process.cwd(), "img");
+      imgDir = imgDirLocal;
+      if (!fs.existsSync(imgDirLocal)) {
+        fs.mkdirSync(imgDirLocal, { recursive: true });
+      }
+      
+      // Clear existing images
+      const existingFiles = fs.readdirSync(imgDirLocal);
+      existingFiles.forEach(file => {
+        fs.unlinkSync(path.join(imgDirLocal, file));
+      });
+      
+      const destPath = path.join(imgDirLocal, image.originalname);
+      fs.renameSync(image.path, destPath);
+    } else if (image?.path) {
+      // We won't use this upload; clean up temp file
+      try {
+        fs.unlinkSync(image.path);
+      } catch {
+        // ignore cleanup errors
+      }
+    }
 
     // Validate LUT configuration before attempting any on-chain lookups
     try {
@@ -761,6 +1020,7 @@ app.post("/api/launch", upload.single("image"), async (req, res) => {
       youtube: youtube || "",
       jitoTip: parseFloat(jitoTip || "0.05"),
       imagePath: imgDir,
+      metadataUri: normalizedMetadataUri,
       dryRun: dryRun === true || dryRun === "true" || dryRun === "1",
     });
     

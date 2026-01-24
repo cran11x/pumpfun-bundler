@@ -4,7 +4,7 @@ import { MainLayout } from "@/components/layout/MainLayout";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { useEffect, useState } from "react";
-import { generateBuyAmounts, getSolPrice, launchToken } from "@/lib/api";
+import { generateBuyAmounts, getSolPrice, launchToken, uploadMetadata, getWallets, getMainWallet, setBuyAmounts, getMint, generateMint } from "@/lib/api";
 import { Rocket, Upload, Loader2 } from "lucide-react";
 
 export default function LaunchPage() {
@@ -22,6 +22,8 @@ export default function LaunchPage() {
   const [image, setImage] = useState<File | null>(null);
   const [launching, setLaunching] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
+  const [metadataUri, setMetadataUri] = useState<string | null>(null);
+  const [uploadingMeta, setUploadingMeta] = useState(false);
   const [buyCurrency, setBuyCurrency] = useState<"eur" | "sol">("eur");
   const [buyTarget, setBuyTarget] = useState("300");
   const [buyVariance, setBuyVariance] = useState("30");
@@ -29,6 +31,14 @@ export default function LaunchPage() {
   const [solEur, setSolEur] = useState<number | null>(null);
   const [generating, setGenerating] = useState(false);
   const [generated, setGenerated] = useState<Record<string, { solAmount: string; approxEur?: number }>>({});
+  const [manualEnabled, setManualEnabled] = useState(false);
+  const [manualAmounts, setManualAmounts] = useState<Record<string, string>>({});
+  const [savingManual, setSavingManual] = useState(false);
+  const [wallets, setWallets] = useState<string[]>([]);
+  const [devWalletPk, setDevWalletPk] = useState<string | null>(null);
+  const [mintAddress, setMintAddress] = useState<string | null>(null);
+  const [mintConfirmed, setMintConfirmed] = useState(false);
+  const [mintLoading, setMintLoading] = useState(false);
 
   useEffect(() => {
     // Best-effort: fetch SOL/EUR price for nicer UX
@@ -39,6 +49,36 @@ export default function LaunchPage() {
         if (typeof p === "number" && Number.isFinite(p) && p > 0) setSolEur(p);
       } catch {
         // ignore
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    // Load wallet list for manual per-wallet amounts
+    (async () => {
+      try {
+        const [walletsResp, mainResp] = await Promise.all([getWallets(), getMainWallet()]);
+        const subWallets = Array.isArray(walletsResp?.wallets)
+          ? walletsResp.wallets.map((w: any) => w.publicKey)
+          : [];
+        setWallets(subWallets);
+        setDevWalletPk(mainResp?.wallet?.publicKey ?? null);
+      } catch (error) {
+        console.error("Failed to load wallets for manual buy amounts:", error);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    // Load existing pre-generated mint (if any)
+    (async () => {
+      try {
+        const resp = await getMint();
+        if (resp?.mint) {
+          setMintAddress(resp.mint);
+        }
+      } catch (error) {
+        console.error("Failed to load mint:", error);
       }
     })();
   }, []);
@@ -59,6 +99,13 @@ export default function LaunchPage() {
         solEur: buyCurrency === "eur" && solEur ? solEur : undefined,
       });
       setGenerated(resp.generated || {});
+      if (manualEnabled && resp.generated) {
+        const next: Record<string, string> = {};
+        Object.entries(resp.generated).forEach(([pk, v]) => {
+          next[pk] = v.solAmount;
+        });
+        setManualAmounts((prev) => ({ ...prev, ...next }));
+      }
       alert(`✅ Generated buy amounts for ${resp.walletsCount} wallet(s). Saved into keyInfo.json.`);
     } catch (e: any) {
       alert(`Failed to generate: ${e?.message ?? String(e)}`);
@@ -67,10 +114,82 @@ export default function LaunchPage() {
     }
   };
 
+  const handleManualSave = async () => {
+    if (savingManual) return;
+    const entries: Array<{ pk: string; label: string }> = [
+      ...(devWalletPk ? [{ pk: devWalletPk, label: "Dev wallet" }] : []),
+      ...wallets.map((pk, i) => ({ pk, label: `Wallet ${i + 1}` })),
+    ];
+    if (entries.length === 0) {
+      alert("No wallets loaded. Please refresh the page.");
+      return;
+    }
+    const amounts: Record<string, number> = {};
+    const missing: string[] = [];
+    for (const entry of entries) {
+      const raw = manualAmounts[entry.pk];
+      if (!raw || !raw.trim()) {
+        missing.push(entry.label);
+        continue;
+      }
+      const num = Number(raw);
+      if (!Number.isFinite(num) || num <= 0) {
+        alert(`Invalid SOL amount for ${entry.label}.`);
+        return;
+      }
+      amounts[entry.pk] = num;
+    }
+    if (missing.length > 0) {
+      alert(`Please fill SOL amount for: ${missing.join(", ")}`);
+      return;
+    }
+    setSavingManual(true);
+    try {
+      const resp = await setBuyAmounts(amounts);
+      setGenerated(resp.updated || {});
+      alert(`Saved manual buy amounts for ${resp.walletsCount} wallet(s).`);
+    } catch (error: any) {
+      const apiMessage =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        "Unknown error";
+      alert(`Failed to save manual buy amounts: ${apiMessage}`);
+      console.error("Manual buy amounts error:", error);
+    } finally {
+      setSavingManual(false);
+    }
+  };
+
+  const handleMintGenerate = async (force = false) => {
+    if (mintLoading) return;
+    setMintLoading(true);
+    try {
+      const resp = await generateMint(force);
+      setMintAddress(resp.mint);
+      setMintConfirmed(false);
+      if (resp.reused) {
+        alert("Existing mint found and reused.");
+      } else {
+        alert("Mint generated successfully. Please confirm before launch.");
+      }
+    } catch (error: any) {
+      const apiMessage =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        "Unknown error";
+      alert(`Failed to generate mint: ${apiMessage}`);
+    } finally {
+      setMintLoading(false);
+    }
+  };
+
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       setImage(file);
+      setMetadataUri(null);
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreview(reader.result as string);
@@ -79,10 +198,50 @@ export default function LaunchPage() {
     }
   };
 
+  const handleMetadataUpload = async () => {
+    if (!image) {
+      alert("Please select an image first");
+      return;
+    }
+    if (!formData.name || !formData.symbol || !formData.description) {
+      alert("Name, symbol, and description are required before upload");
+      return;
+    }
+    setUploadingMeta(true);
+    try {
+      const result = await uploadMetadata({
+        ...formData,
+        image,
+      });
+      const uri = result?.metadataUri;
+      if (!uri) throw new Error("No metadataUri returned");
+      setMetadataUri(uri);
+      alert("Metadata uploaded. You can now launch with the saved metadata.");
+    } catch (error: any) {
+      const apiMessage =
+        error?.response?.data?.error ||
+        error?.response?.data?.message ||
+        error?.message ||
+        "Unknown error";
+      alert(`Metadata upload failed: ${apiMessage}`);
+      console.error("Metadata upload error:", error);
+    } finally {
+      setUploadingMeta(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!image) {
-      alert("Please select an image");
+    if (!mintAddress) {
+      alert("Please generate a mint first.");
+      return;
+    }
+    if (!mintConfirmed) {
+      alert("Please confirm the mint before launching.");
+      return;
+    }
+    if (!image && !metadataUri) {
+      alert("Please select an image or upload metadata first");
       return;
     }
 
@@ -90,7 +249,8 @@ export default function LaunchPage() {
     try {
       const result = await launchToken({
         ...formData,
-        image,
+        image: metadataUri ? undefined : image ?? undefined,
+        metadataUri: metadataUri ?? undefined,
         jitoTip: parseFloat(formData.jitoTip),
       });
       alert("Token launch initiated! Check console for details.");
@@ -296,7 +456,86 @@ export default function LaunchPage() {
                       </label>
                     )}
                   </div>
+                  <div className="mt-3 flex flex-col gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={handleMetadataUpload}
+                      disabled={uploadingMeta || !image}
+                    >
+                      {uploadingMeta ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Uploading...
+                        </>
+                      ) : (
+                        "Upload metadata first"
+                      )}
+                    </Button>
+                    {metadataUri && (
+                      <div className="text-xs text-gray-400">
+                        Metadata uploaded. Launch will reuse this URI.
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setMetadataUri(null)}
+                          className="ml-2"
+                        >
+                          Clear
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Mint (Pre-Generate)</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-gray-400">
+                  Generate the mint address before launch. You must confirm it before launching.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => handleMintGenerate(false)}
+                    disabled={mintLoading}
+                  >
+                    {mintLoading ? "Generating..." : mintAddress ? "Reuse Mint" : "Generate Mint"}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => handleMintGenerate(true)}
+                    disabled={mintLoading}
+                  >
+                    Regenerate
+                  </Button>
+                </div>
+
+                {mintAddress && (
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-500">Mint address:</div>
+                    <div className="terminal-text text-sm text-[#00ff41] break-all">
+                      {mintAddress}
+                    </div>
+                    <label className="flex items-center gap-2 text-sm text-gray-300">
+                      <input
+                        type="checkbox"
+                        checked={mintConfirmed}
+                        onChange={(e) => setMintConfirmed(e.target.checked)}
+                      />
+                      I confirm launch with this mint
+                    </label>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -374,6 +613,76 @@ export default function LaunchPage() {
                   {generating ? "Generating..." : "Generate & Save"}
                 </Button>
 
+                <div className="pt-3 border-t border-white/5">
+                  <label className="flex items-center gap-3 text-base text-gray-200">
+                    <input
+                      type="checkbox"
+                      checked={manualEnabled}
+                      onChange={(e) => setManualEnabled(e.target.checked)}
+                      className="w-5 h-5"
+                    />
+                    Manual per-wallet amounts
+                  </label>
+                  <p className="text-sm text-gray-400 mt-2">
+                    Set exact SOL buy amount for each wallet. This overrides generated values in <code className="text-gray-300">keyInfo.json</code>.
+                  </p>
+                </div>
+
+                {manualEnabled && (
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      {[
+                        ...(devWalletPk ? [{ pk: devWalletPk, label: "Dev wallet" }] : []),
+                        ...wallets.map((pk, i) => ({ pk, label: `Wallet ${i + 1}` })),
+                      ].map((entry) => (
+                        <div key={entry.pk} className="flex items-center gap-4">
+                          <div className="w-36 text-sm text-gray-300">{entry.label}</div>
+                          <div className="flex-1 text-sm text-gray-400">
+                            {entry.pk.slice(0, 6)}…{entry.pk.slice(-6)}
+                          </div>
+                          <input
+                            type="number"
+                            step="0.000001"
+                            min="0"
+                            value={manualAmounts[entry.pk] ?? ""}
+                            onChange={(e) =>
+                              setManualAmounts((prev) => ({ ...prev, [entry.pk]: e.target.value }))
+                            }
+                            className="w-36 px-4 py-2 bg-[#0f0f1a] border border-[#00ff41]/20 rounded text-white focus:outline-none focus:border-[#00ff41] focus:glow-green text-base"
+                            placeholder="0.05"
+                          />
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={handleManualSave}
+                        disabled={savingManual}
+                      >
+                        {savingManual ? "Saving..." : "Save Manual Amounts"}
+                      </Button>
+                      {Object.keys(generated).length > 0 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          onClick={() => {
+                            const next: Record<string, string> = {};
+                            Object.entries(generated).forEach(([pk, v]) => {
+                              next[pk] = v.solAmount;
+                            });
+                            setManualAmounts((prev) => ({ ...prev, ...next }));
+                          }}
+                        >
+                          Use Generated Values
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {Object.keys(generated).length > 0 && (
                   <div className="mt-2 text-sm text-gray-300">
                     <div className="text-xs text-gray-500 mb-2">Generated:</div>
@@ -401,7 +710,7 @@ export default function LaunchPage() {
               type="submit"
               variant="primary"
               size="lg"
-              disabled={launching || !image}
+              disabled={launching || !mintAddress || !mintConfirmed || (!image && !metadataUri)}
             >
               {launching ? (
                 <>
